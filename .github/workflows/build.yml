@@ -2,7 +2,7 @@ name: Build TrollVNC
 
 on:
   push:
-    branches: [release]
+    branches: [main]
   workflow_dispatch:
     inputs:
       is_managed:
