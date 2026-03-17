@@ -920,3 +920,9 @@ html {
     font-size: 90px;
   }
 }
+#noVNC_control_bar_anchor {
+  display: none !important;
+}
+#noVNC_status {
+  display: none !important;
+}
