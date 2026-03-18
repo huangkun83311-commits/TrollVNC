@@ -257,7 +257,7 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
         return;
     }
 
-    (* UIBarButtonItem *applyItem = [[UIBarButtonItem alloc]
+    UIBarButtonItem *applyItem = [[UIBarButtonItem alloc]
         initWithTitle:NSLocalizedStringFromTableInBundle(@"Apply", @"Localizable", self.bundle, nil)
                 style:UIBarButtonItemStyleDone
                target:self
@@ -269,7 +269,7 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
                 style:UIBarButtonItemStylePlain
                target:self
                action:@selector(showClients)];
-    clientsItem.tintColor = _primaryColor; *)
+    clientsItem.tintColor = _primaryColor;
 
 #ifdef THEBOOTSTRAP
     BOOL isApp = YES;
@@ -279,7 +279,7 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
 
     BOOL isPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
     
-    (* if (isApp || isPad) {
+    if (isApp || isPad) {
         self.navigationItem.leftBarButtonItem = clientsItem;
         self.navigationItem.rightBarButtonItem = applyItem;
     } else {
@@ -288,7 +288,7 @@ NS_INLINE NSString *TVNCGetEn0IPAddress(void) {
             clientsItem,
         ];
     }
-   *)
+  
     self.monitor = nw_path_monitor_create();
     nw_path_monitor_set_queue(self.monitor, dispatch_get_main_queue());
 
