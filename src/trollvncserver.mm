@@ -71,7 +71,7 @@ static double gKeepAliveSec = 0.0; // 15..86400
 static BOOL gClipboardEnabled = YES;
 static BOOL gIsDaemonMode = NO; // set when launched with -daemon
 
-static double gScale = 1.0; // 0 < scale <= 1.0, 1.0 = no scaling
+static double gScale = 0.8; // 0 < scale <= 1.0, 1.0 = no scaling
 // Preferred frame rate range (0 = unspecified)
 static int gFpsMin = 0;
 static int gFpsPref = 0;
@@ -110,7 +110,7 @@ static char *gAuthPasswdStr = NULL;         // owns the duplicated password stri
 static char *gAuthViewOnlyPasswdStr = NULL; // optional view-only password string
 
 // HTTP server (LibVNCServer built-in web client)
-static int gHttpPort = 0;
+static int gHttpPort = 5900;
 static char *gHttpDirOverride = NULL;
 static char *gSslCertPath = NULL;
 static char *gSslKeyPath = NULL;
@@ -128,8 +128,8 @@ static int gRepeaterPort = 5500;
 static int gRepeaterId = 12345679;
 
 // User notifications
-static BOOL gUserClientNotifsEnabled = YES;
-static BOOL gUserSingleNotifsEnabled = YES;
+static BOOL gUserClientNotifsEnabled = NO;
+static BOOL gUserSingleNotifsEnabled = NO;
 
 // Blocked hosts (temporary blacklist)
 static NSMutableSet<NSString *> *gBlockedHosts = nil;
