@@ -5090,8 +5090,13 @@ int main(int argc, const char *argv[]) {
         prepareBulletinManager();
         prepareClipboardManager();
         prepareScreenCapturer();
-
-        // ✅ 创建 TCP 服务器监听所有接口（0.0.0.0:12345）
+        
+        // ✅ 强制启动屏幕捕获（不依赖 VNC 客户端）
+        gIsCaptureStarted = YES;
+        [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+        TVLog(@"✅ Screen capture started (forced for H264)");
+        
+        // ✅ 创建 TCP 服务器监听 0.0.0.0:12345
         static int h264_client_fd = -1;
         
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -5149,7 +5154,7 @@ int main(int argc, const char *argv[]) {
         }
 
         initializeTilingOrReset();
-        initializeAndRunRfbServer();
+        // initializeAndRunRfbServer();
 
         // ✅ 启动命令服务器
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
