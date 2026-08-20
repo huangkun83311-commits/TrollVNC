@@ -7,7 +7,8 @@ typedef void (^TVH264EncoderOutputBlock)(NSData *naluData, BOOL isKeyFrame);
 
 @interface TVH264Encoder : NSObject
 
-@property (nonatomic, copy) TVH264EncoderOutputBlock outputBlock;
+// ✅ 加上 nullable
+@property (nonatomic, copy, nullable) TVH264EncoderOutputBlock outputBlock;
 
 - (void)encodePixelBuffer:(CVPixelBufferRef)pixelBuffer
               orientation:(int)rotationQuad
