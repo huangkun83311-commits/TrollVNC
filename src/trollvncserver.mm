@@ -50,6 +50,7 @@
 #import "PSAssistiveTouchSettingsDetail.h"
 #import "STHIDEventGenerator.h"
 #import "ScreenCapturer.h"
+#import "TVH264Encoder.h"  // ✅ 添加 H264 编码器头文件
 
 #define LocalizedString(key, comment, bundle, table)                                                                   \
     (NSLocalizedStringFromTableInBundle((key), (table), (bundle), (comment)) ?: (key))
@@ -103,6 +104,10 @@ static BOOL gAutoAssistEnabled = NO;
 static BOOL gCursorEnabled = NO;
 static BOOL gKeyEventLogging = NO;
 static BOOL gOrientationSyncEnabled = YES;
+
+// ✅ H264 编码器
+static TVH264Encoder *gH264Encoder = nil;
+static BOOL gH264Enabled = NO;
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
@@ -2218,6 +2223,12 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     if (!pb) {
         TVLogVerbose(@"sampleBuffer has no image buffer (skip)");
         return;
+    }
+
+    // ✅ H264 编码
+    if (gH264Encoder && gH264Enabled) {
+        int rotQ = gRotationQuad.load(std::memory_order_relaxed);
+        [gH264Encoder encodePixelBuffer:pb orientation:rotQ scale:gScale];
     }
 
     // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
@@ -4339,7 +4350,7 @@ static void prepareClipboardManager(void) {
     // server->client sync; start/stop tied to client presence
     if (gClipboardEnabled) {
         [[ClipboardManager sharedManager] setOnChange:^(NSString *_Nullable text) {
-            // If we’re in suppression (coming from client->server), do nothing
+            // If we're in suppression (coming from client->server), do nothing
             if (gClipboardSuppressSend.load(std::memory_order_relaxed) > 0)
                 return;
             sendClipboardToClients(text);
@@ -4904,6 +4915,12 @@ static void cleanupAndExit(int code) {
     // Stop event thread if running
     tvStopRfbEventThread();
 
+    // ✅ 清理 H264 编码器
+    if (gH264Encoder) {
+        [gH264Encoder invalidate];
+        gH264Encoder = nil;
+    }
+
     if (gFileTransferRegistered) {
         rfbUnregisterTightVNCFileTransferExtension();
     }
@@ -4914,7 +4931,7 @@ static void cleanupAndExit(int code) {
         gScreen = NULL;
     }
 
-    // There’s no need to free other resources because we’re going to exit the process. Yay!
+    // There's no need to free other resources because we're going to exit the process. Yay!
     exit(code);
 }
 
@@ -5065,6 +5082,23 @@ int main(int argc, const char *argv[]) {
         prepareBulletinManager();
         prepareClipboardManager();
         prepareScreenCapturer();
+
+        // ✅ 初始化 H264 编码器
+        gH264Encoder = [[TVH264Encoder alloc] init];
+        if (gH264Encoder) {
+            gH264Enabled = YES;
+            gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
+                // 这里实现发送 H264 数据到客户端的逻辑
+                // 例如：通过 WebSocket 发送，或者通过自定义 VNC 扩展发送
+                TVLog(@"H264 encoded data: %lu bytes, keyframe: %@", 
+                      (unsigned long)naluData.length, 
+                      isKeyFrame ? @"YES" : @"NO");
+                
+                // TODO: 发送给客户端
+                // [self sendH264Data:naluData isKeyFrame:isKeyFrame];
+            };
+            TVLog(@"H264 encoder initialized");
+        }
 
         initializeTilingOrReset();
         initializeAndRunRfbServer();
