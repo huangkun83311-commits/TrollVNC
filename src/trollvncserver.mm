@@ -5150,7 +5150,7 @@ int main(int argc, const char *argv[]) {
  #pragma mark - Command Server
     
     #define TV_COMMAND_PORT 12346
-    static int gCommandServerFd = -1;
+
     
     static void tvHandleCommand(const char *cmd) {
         if (!cmd || !gH264Encoder) return;
