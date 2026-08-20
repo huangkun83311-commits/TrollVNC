@@ -108,6 +108,7 @@ static BOOL gOrientationSyncEnabled = YES;
 // ✅ H264 编码器
 static TVH264Encoder *gH264Encoder = nil;
 static BOOL gH264Enabled = NO;
+static int gTcpSocketFd = -1;
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
@@ -5083,19 +5084,36 @@ int main(int argc, const char *argv[]) {
         prepareClipboardManager();
         prepareScreenCapturer();
 
+        // ✅ 连接 TCP Socket（frp 客户端监听的端口）
+        gTcpSocketFd = socket(AF_INET, SOCK_STREAM, 0);
+        if (gTcpSocketFd >= 0) {
+            struct sockaddr_in addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(12345);
+            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+            
+            if (connect(gTcpSocketFd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                TVLog(@"TCP socket connected to frp client on port 12345");
+            } else {
+                TVLog(@"Failed to connect TCP socket: %s", strerror(errno));
+                close(gTcpSocketFd);
+                gTcpSocketFd = -1;
+            }
+        }
+        
         // ✅ 初始化 H264 编码器
         gH264Encoder = [[TVH264Encoder alloc] init];
         if (gH264Encoder) {
             gH264Enabled = YES;
             gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-                // 这里实现发送 H264 数据到客户端的逻辑
-                // 例如：通过 WebSocket 发送，或者通过自定义 VNC 扩展发送
-                TVLog(@"H264 encoded data: %lu bytes, keyframe: %@", 
+                if (gTcpSocketFd >= 0) {
+                    send(gTcpSocketFd, naluData.bytes, naluData.length, 0);
+                }
+                
+                TVLog(@"H264 sent: %lu bytes, keyframe: %@", 
                       (unsigned long)naluData.length, 
                       isKeyFrame ? @"YES" : @"NO");
-                
-                // TODO: 发送给客户端
-                // [self sendH264Data:naluData isKeyFrame:isKeyFrame];
             };
             TVLog(@"H264 encoder initialized");
         }
