@@ -5149,7 +5149,7 @@ int main(int argc, const char *argv[]) {
         }
 
         initializeTilingOrReset();
-        // initializeAndRunRfbServer();
+        initializeAndRunRfbServer();
 
         // ✅ 启动命令服务器
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
