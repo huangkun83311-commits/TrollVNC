@@ -73,8 +73,6 @@ trollvncserver_LIBRARIES += sasl2
 trollvncserver_LIBRARIES += ssl
 trollvncserver_LIBRARIES += vncserver
 trollvncserver_LIBRARIES += z
-# ✅ 添加 roothide
-trollvncserver_LIBRARIES += roothide
 endif
 
 trollvncserver_FRAMEWORKS += Accelerate
