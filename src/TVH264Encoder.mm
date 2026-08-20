@@ -2,6 +2,10 @@
 #import <VideoToolbox/VideoToolbox.h>
 #import <Accelerate/Accelerate.h>
 
+#ifndef TVLog
+#define TVLog(fmt, ...) NSLog(@"[H264] " fmt, ##__VA_ARGS__)
+#endif
+
 @interface TVH264Encoder () {
     VTCompressionSessionRef _compressionSession;
     dispatch_queue_t _encodeQueue;
