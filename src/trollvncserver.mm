@@ -112,6 +112,9 @@ static int gTcpSocketFd = -1;
 
 #define TV_COMMAND_PORT 12346
 static int gCommandServerFd = -1;
+// ✅ 命令服务器函数声明
+static void tvStartCommandServer(void);
+static void tvHandleCommand(const char *cmd);
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
