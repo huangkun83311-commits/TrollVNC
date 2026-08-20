@@ -29,7 +29,7 @@ trollvncserver_FILES += src/ScreenCapturer.mm
 trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
 # ✅ 添加 H264 编码器
-trollvncserver_FILES += src/TVH264Encoder.m
+trollvncserver_FILES += src/TVH264Encoder.mm
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
