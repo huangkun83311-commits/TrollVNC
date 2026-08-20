@@ -2230,7 +2230,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     if (gH264Encoder && gH264Enabled) {
         int rotQ = gRotationQuad.load(std::memory_order_relaxed);
         [gH264Encoder encodePixelBuffer:pb orientation:rotQ scale:gScale];
-        return;
+        //return;
     }
 
     // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
