@@ -13,6 +13,12 @@
     CVPixelBufferRef _scaledPixelBuffer;
     void *_rotateScratch;
     size_t _rotateScratchSize;
+    
+    // H264 动态参数
+    int _fps;
+    int _bitrate;
+    int _keyFrameInterval;
+    int _profile;
 }
 
 @end
@@ -23,6 +29,12 @@
     self = [super init];
     if (self) {
         _encodeQueue = dispatch_queue_create("com.82flex.trollvnc.h264encoder", DISPATCH_QUEUE_SERIAL);
+        
+        // 默认参数
+        _fps = 30;
+        _bitrate = 3 * 1024 * 1024;  // 3Mbps
+        _keyFrameInterval = 60;
+        _profile = 2;  // High
     }
     return self;
 }
@@ -34,6 +46,58 @@
         _rotateScratch = NULL;
     }
 }
+
+#pragma mark - 参数设置
+
+- (void)setFps:(int)fps {
+    if (fps != _fps && fps > 0 && fps <= 120) {
+        _fps = fps;
+        [self rebuildSessionIfNeeded];
+        TVLog(@"H264: FPS set to %d", _fps);
+    }
+}
+
+- (void)setBitrate:(int)bitrate {
+    if (bitrate != _bitrate && bitrate > 0) {
+        _bitrate = bitrate;
+        [self rebuildSessionIfNeeded];
+        TVLog(@"H264: Bitrate set to %d bps", _bitrate);
+    }
+}
+
+- (void)setKeyFrameInterval:(int)interval {
+    if (interval != _keyFrameInterval && interval > 0) {
+        _keyFrameInterval = interval;
+        [self rebuildSessionIfNeeded];
+        TVLog(@"H264: KeyFrameInterval set to %d", _keyFrameInterval);
+    }
+}
+
+- (void)setProfile:(int)profile {
+    if (profile != _profile && profile >= 0 && profile <= 2) {
+        _profile = profile;
+        [self rebuildSessionIfNeeded];
+        TVLog(@"H264: Profile set to %d", _profile);
+    }
+}
+
+- (int)getFps {
+    return _fps;
+}
+
+- (int)getBitrate {
+    return _bitrate;
+}
+
+- (int)getKeyFrameInterval {
+    return _keyFrameInterval;
+}
+
+- (int)getProfile {
+    return _profile;
+}
+
+#pragma mark - 编码核心
 
 - (void)encodePixelBuffer:(CVPixelBufferRef)pixelBuffer
               orientation:(int)rotationQuad
@@ -165,7 +229,6 @@
                    outW * 4);
         }
     } else {
-        // ✅ 修复：正确使用 vImageScale_ARGB8888
         void *temp = malloc(vImageScale_ARGB8888(&tmpRot, &dstBuf, NULL, kvImageGetTempBufferSize));
         if (temp) {
             vImage_Error err = vImageScale_ARGB8888(&tmpRot, &dstBuf, temp, kvImageHighQualityResampling);
@@ -180,6 +243,17 @@
     CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
 
     return outBuffer;
+}
+
+#pragma mark - 编码器管理
+
+- (void)rebuildSessionIfNeeded {
+    if (_compressionSession) {
+        [self rebuildSessionIfNeededWithWidth:_currentWidth
+                                       height:_currentHeight
+                                     rotation:_currentRotation
+                                        scale:_currentScale];
+    }
 }
 
 - (void)rebuildSessionIfNeededWithWidth:(int)width
@@ -202,18 +276,31 @@
                                                   (__bridge void *)self,
                                                   &_compressionSession);
     if (status != noErr) {
+        TVLog(@"VTCompressionSessionCreate failed: %d", status);
         return;
     }
 
-    int fps = 30;
+    // 使用动态参数
+    int fps = _fps > 0 ? _fps : 30;
+    int bitrate = _bitrate > 0 ? _bitrate : 3 * 1024 * 1024;
+    int keyint = _keyFrameInterval > 0 ? _keyFrameInterval : fps * 2;
+
+    // 选择 Profile
+    CFStringRef profile = kVTProfileLevel_H264_High_AutoLevel;
+    switch (_profile) {
+        case 0: profile = kVTProfileLevel_H264_Baseline_AutoLevel; break;
+        case 1: profile = kVTProfileLevel_H264_Main_AutoLevel; break;
+        case 2: profile = kVTProfileLevel_H264_High_AutoLevel; break;
+        default: profile = kVTProfileLevel_H264_High_AutoLevel; break;
+    }
 
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
-    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ProfileLevel, profile);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(fps * 2));
+    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(keyint));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps));
-    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(3 * 1024 * 1024));
-    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)@[@(4 * 1024 * 1024 / 8), @1.0]);
+    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitrate));
+    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)@[@(bitrate / 8), @1.0]);
 
     VTCompressionSessionPrepareToEncodeFrames(_compressionSession);
 
@@ -221,6 +308,9 @@
     _currentHeight = height;
     _currentRotation = rotation;
     _currentScale = scale;
+    
+    TVLog(@"H264 encoder rebuilt: %dx%d, fps=%d, bitrate=%d, keyint=%d, profile=%d",
+          width, height, fps, bitrate, keyint, _profile);
 }
 
 - (void)encodeFrameInternal:(CVPixelBufferRef)pixelBuffer {
@@ -250,6 +340,8 @@
     _currentRotation = -1;
     _currentScale = 0;
 }
+
+#pragma mark - 回调
 
 static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
                                             void *sourceFrameRefCon,
@@ -284,7 +376,7 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
 
         NSData *naluData = [[NSData alloc] initWithBytes:(dataPointer + bufferOffset + AVCCHeaderLength)
                                                   length:NALUnitLength];
-        // ✅ 修复：先获取 block 再调用
+        
         TVH264EncoderOutputBlock block = encoder.outputBlock;
         if (block) {
             block(naluData, keyFrame);
