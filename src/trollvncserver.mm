@@ -5091,20 +5091,40 @@ int main(int argc, const char *argv[]) {
         prepareClipboardManager();
         prepareScreenCapturer();
 
-        // ✅ 连接 TCP Socket（frp 客户端监听的端口）
-        gTcpSocketFd = socket(AF_INET, SOCK_STREAM, 0);
-        if (gTcpSocketFd >= 0) {
+        // ✅ 创建 TCP 服务器监听所有接口（0.0.0.0:12345）
+        static int h264_client_fd = -1;
+        
+        int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd >= 0) {
+            int yes = 1;
+            setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+            
             struct sockaddr_in addr;
             memset(&addr, 0, sizeof(addr));
             addr.sin_family = AF_INET;
             addr.sin_port = htons(12345);
-            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+            addr.sin_addr.s_addr = htonl(INADDR_ANY);
             
-            if (connect(gTcpSocketFd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                TVLog(@"TCP socket connected to frp client on port 12345");
+            if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+                listen(server_fd, 8) == 0) {
+                gTcpSocketFd = server_fd;
+                TVLog(@"✅ H264 server listening on 0.0.0.0:12345");
+                
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    while (1) {
+                        struct sockaddr_in caddr;
+                        socklen_t clen = sizeof(caddr);
+                        int client_fd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
+                        if (client_fd >= 0) {
+                            if (h264_client_fd >= 0) close(h264_client_fd);
+                            h264_client_fd = client_fd;
+                            TVLog(@"✅ H264 client connected");
+                        }
+                    }
+                });
             } else {
-                TVLog(@"Failed to connect TCP socket: %s", strerror(errno));
-                close(gTcpSocketFd);
+                TVLog(@"❌ H264 server failed: %s", strerror(errno));
+                close(server_fd);
                 gTcpSocketFd = -1;
             }
         }
@@ -5114,12 +5134,11 @@ int main(int argc, const char *argv[]) {
         if (gH264Encoder) {
             gH264Enabled = YES;
             gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-                // ✅ 发送到 TCP 连接（12345 端口）
-                if (gTcpSocketFd >= 0) {
-                    // 发送长度前缀（4字节大端）+ H264 数据
+                // ✅ 发送给已连接的 H264 客户端
+                if (h264_client_fd >= 0) {
                     uint32_t len = htonl((uint32_t)naluData.length);
-                    send(gTcpSocketFd, &len, 4, 0);
-                    send(gTcpSocketFd, naluData.bytes, naluData.length, 0);
+                    send(h264_client_fd, &len, 4, 0);
+                    send(h264_client_fd, naluData.bytes, naluData.length, 0);
                 }
                 
                 TVLog(@"H264 sent: %lu bytes, keyframe: %@", 
@@ -5130,7 +5149,7 @@ int main(int argc, const char *argv[]) {
         }
 
         initializeTilingOrReset();
-        initializeAndRunRfbServer();
+        // initializeAndRunRfbServer();
 
         // ✅ 启动命令服务器
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
