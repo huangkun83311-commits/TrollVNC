@@ -85,6 +85,7 @@ trollvncserver_FRAMEWORKS += IOSurface
 trollvncserver_FRAMEWORKS += QuartzCore
 trollvncserver_FRAMEWORKS += UIKit
 trollvncserver_FRAMEWORKS += UserNotifications
+trollvncserver_FRAMEWORKS += VideoToolbox 
 
 trollvncserver_PRIVATE_FRAMEWORKS += FrontBoardServices
 
