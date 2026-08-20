@@ -165,12 +165,15 @@
                    outW * 4);
         }
     } else {
-        void *temp = malloc(tmpRot.width * tmpRot.height * 4);
-        size_t need = vImageScale_ARGB8888(&tmpRot, &dstBuf, temp, kvImageHighQualityResampling);
-        if (need > 0) {
-            vImageScale_ARGB8888(&tmpRot, &dstBuf, temp, kvImageHighQualityResampling);
+        // ✅ 修复：正确使用 vImageScale_ARGB8888
+        void *temp = malloc(vImageScale_ARGB8888(&tmpRot, &dstBuf, NULL, kvImageGetTempBufferSize));
+        if (temp) {
+            vImage_Error err = vImageScale_ARGB8888(&tmpRot, &dstBuf, temp, kvImageHighQualityResampling);
+            if (err != kvImageNoError) {
+                NSLog(@"vImageScale failed: %ld", (long)err);
+            }
+            free(temp);
         }
-        free(temp);
     }
 
     CVPixelBufferUnlockBaseAddress(outBuffer, 0);
@@ -281,7 +284,11 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
 
         NSData *naluData = [[NSData alloc] initWithBytes:(dataPointer + bufferOffset + AVCCHeaderLength)
                                                   length:NALUnitLength];
-        encoder.outputBlock(naluData, keyFrame);
+        // ✅ 修复：先获取 block 再调用
+        TVH264EncoderOutputBlock block = encoder.outputBlock;
+        if (block) {
+            block(naluData, keyFrame);
+        }
 
         bufferOffset += AVCCHeaderLength + NALUnitLength;
     }
