@@ -378,13 +378,11 @@ static CFIndex sDirtyFrameCount = 0;
     if (!mFrameHandler)
         return;
 
-    // Update the screen contents into our IOSurface
-    BOOL displayChanged = [self updateDisplay:link];
-    if (!displayChanged) {
-        return; // No change, nothing to do
-    }
-
-    // Wrap IOSurface in a CVPixelBuffer (zero-copy)
+    // ✅ 强制渲染，忽略脏检测
+    // 不管屏幕有没有变化，都重新渲染并发送数据
+    [self renderDisplayToScreenSurface:mScreenSurface];
+    
+    // 直接发送数据，不检查 displayChanged
     CVPixelBufferRef pixelBuffer = NULL;
     NSDictionary *attrs = @{(NSString *)kCVPixelBufferIOSurfacePropertiesKey : @{}};
     CVReturn cvret = CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, mScreenSurface,
@@ -393,7 +391,6 @@ static CFIndex sDirtyFrameCount = 0;
         return;
     }
 
-    // Create format description from the pixel buffer
     CMVideoFormatDescriptionRef formatDesc = NULL;
     OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &formatDesc);
     if (status != noErr || !formatDesc) {
@@ -401,8 +398,7 @@ static CFIndex sDirtyFrameCount = 0;
         return;
     }
 
-    // Build timing from CADisplayLink
-    int32_t timescale = 1000000000; // 1 ns
+    int32_t timescale = 1000000000;
     CMSampleTimingInfo timing;
     timing.duration = CMTimeMakeWithSeconds(link.duration, timescale);
     timing.presentationTimeStamp = CMTimeMakeWithSeconds(link.timestamp, timescale);
