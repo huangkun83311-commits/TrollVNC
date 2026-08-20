@@ -2236,7 +2236,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     if (gH264Encoder && gH264Enabled) {
         int rotQ = gRotationQuad.load(std::memory_order_relaxed);
         [gH264Encoder encodePixelBuffer:pb orientation:rotQ scale:gScale];
-        //return;
+        return;
     }
 
     // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
@@ -5108,20 +5108,19 @@ int main(int argc, const char *argv[]) {
                 gTcpSocketFd = -1;
             }
         }
-        
+                
         // ✅ 初始化 H264 编码器
         gH264Encoder = [[TVH264Encoder alloc] init];
         if (gH264Encoder) {
             gH264Enabled = YES;
             gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-                // ✅ 发给所有 VNC 客户端（走 5901 端口）
-                rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
-                rfbClientPtr cl;
-                while ((cl = rfbClientIteratorNext(it))) {
-                    // 直接发送 H264 数据（不走 VNC 协议）
-                    send(cl->sock, naluData.bytes, naluData.length, 0);
+                // ✅ 发送到 TCP 连接（12345 端口）
+                if (gTcpSocketFd >= 0) {
+                    // 发送长度前缀（4字节大端）+ H264 数据
+                    uint32_t len = htonl((uint32_t)naluData.length);
+                    send(gTcpSocketFd, &len, 4, 0);
+                    send(gTcpSocketFd, naluData.bytes, naluData.length, 0);
                 }
-                rfbReleaseClientIterator(it);
                 
                 TVLog(@"H264 sent: %lu bytes, keyframe: %@", 
                       (unsigned long)naluData.length, 
