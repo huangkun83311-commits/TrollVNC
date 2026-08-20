@@ -28,6 +28,8 @@ trollvncserver_FILES += src/ClipboardManager.mm
 trollvncserver_FILES += src/ScreenCapturer.mm
 trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
+# ✅ 添加 H264 编码器
+trollvncserver_FILES += src/TVH264Encoder.m
 
 trollvncserver_CFLAGS += -fobjc-arc
 trollvncserver_CFLAGS += -Wno-unknown-warning-option
@@ -58,6 +60,7 @@ trollvncserver_CFLAGS += -Iinclude
 trollvncserver_LDFLAGS += -Llib
 endif
 
+# ✅ 添加 -lroothide 解决警告
 ifeq ($(THEOS_DEVICE_SIMULATOR),1)
 trollvncserver_LIBRARIES += vncserver
 trollvncserver_LIBRARIES += z
@@ -70,6 +73,8 @@ trollvncserver_LIBRARIES += sasl2
 trollvncserver_LIBRARIES += ssl
 trollvncserver_LIBRARIES += vncserver
 trollvncserver_LIBRARIES += z
+# ✅ 添加 roothide
+trollvncserver_LIBRARIES += roothide
 endif
 
 trollvncserver_FRAMEWORKS += Accelerate
