@@ -5242,22 +5242,32 @@ int main(int argc, const char *argv[]) {
         gH264Encoder = [[TVH264Encoder alloc] init];
         if (gH264Encoder) {
             gH264Enabled = YES;
+            
+            // ✅ 设置编码器参数
+            [gH264Encoder setFps:30];                    // 30 FPS
+            [gH264Encoder setBitrate:2000 * 1024];       // 2 Mbps
+            [gH264Encoder setKeyFrameInterval:30];       // 每30帧一个关键帧（1秒1个）
+            
+            TVLog(@"✅ H264编码器参数: FPS=%d, Bitrate=%dKbps, KeyInt=%d",
+                  [gH264Encoder getFps],
+                  [gH264Encoder getBitrate] / 1024,
+                  [gH264Encoder getKeyFrameInterval]);
+            
             gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
                 // ✅ 发送给已连接的 H264 客户端
                 if (gH264ClientFd >= 0) {
                     uint32_t len = htonl((uint32_t)naluData.length);
                     send(gH264ClientFd, &len, 4, 0);
                     send(gH264ClientFd, naluData.bytes, naluData.length, 0);
-                    TVLog(@"✅ H264 sent: %lu bytes", (unsigned long)naluData.length);
+                    
+                    // 只在关键帧时打印，避免刷屏
+                    if (isKeyFrame) {
+                        TVLog(@"✅ H264关键帧: %lu bytes", (unsigned long)naluData.length);
+                    }
                 }
-                
-                TVLog(@"H264 sent: %lu bytes, keyframe: %@", 
-                      (unsigned long)naluData.length, 
-                      isKeyFrame ? @"YES" : @"NO");
             };
-            TVLog(@"H264 encoder initialized");
+            TVLog(@"✅ H264 encoder initialized");
         }
-
         initializeTilingOrReset();
         // initializeAndRunRfbServer();
 
