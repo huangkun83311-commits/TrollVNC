@@ -111,6 +111,7 @@ static TVH264Encoder *gH264Encoder = nil;
 static BOOL gH264Enabled = NO;
 static int gTcpSocketFd = -1;
 static int gH264ClientFd = -1;  // ✅ 添加这行
+static NSMutableArray<NSNumber *> *gH264Clients = nil;  // ✅ 客户端列表
 
 #define TV_COMMAND_PORT 12346
 static int gCommandServerFd = -1;
@@ -2235,7 +2236,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     }
 
     // ✅ 没有客户端时不编码
-    if (gH264ClientFd < 0) {
+    if (!gH264Clients || gH264Clients.count == 0) {
         return;
     }
 
@@ -5251,9 +5252,11 @@ int main(int argc, const char *argv[]) {
                         socklen_t clen = sizeof(caddr);
                         int client_fd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
                         if (client_fd >= 0) {
-                            if (gH264ClientFd >= 0) close(gH264ClientFd);
+                            // ✅ 加入客户端列表
+                            if (!gH264Clients) gH264Clients = [NSMutableArray array];
+                            [gH264Clients addObject:@(client_fd)];
                             gH264ClientFd = client_fd;
-                            TVLog(@"✅ 客户端连接");
+                            TVLog(@"✅ 客户端连接，当前连接数: %lu", (unsigned long)gH264Clients.count);
                             
                             // ✅ TCP keepalive（和 VNC 一样）
                             int keepalive = 1;
@@ -5281,13 +5284,16 @@ int main(int argc, const char *argv[]) {
                                     [gH264Encoder setKeyFrameInterval:30];
                                     
                                     gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-                                        if (gH264ClientFd >= 0) {
-                                            uint32_t len = htonl((uint32_t)naluData.length);
-                                            send(gH264ClientFd, &len, 4, 0);
-                                            send(gH264ClientFd, naluData.bytes, naluData.length, 0);
-                                            if (isKeyFrame) {
-                                                TVLog(@"✅ H264关键帧: %lu bytes", (unsigned long)naluData.length);
-                                            }
+                                        // ✅ 广播给所有客户端
+                                        uint32_t len = htonl((uint32_t)naluData.length);
+                                        NSArray *clients = [gH264Clients copy];
+                                        for (NSNumber *num in clients) {
+                                            int fd = num.intValue;
+                                            send(fd, &len, 4, 0);
+                                            send(fd, naluData.bytes, naluData.length, 0);
+                                        }
+                                        if (isKeyFrame) {
+                                            TVLog(@"✅ H264关键帧: %lu bytes, 客户端数: %lu", (unsigned long)naluData.length, (unsigned long)clients.count);
                                         }
                                     };
                                     TVLog(@"✅ 编码器重新初始化");
@@ -5362,24 +5368,25 @@ int main(int argc, const char *argv[]) {
                                     }
                                 }
                                 
-                                // ✅ 客户端断开，停止捕获
-                                if (gH264ClientFd == client_fd) {
-                                    gH264ClientFd = -1;
-                                }
+                                // ✅ 客户端断开，从列表移除
+                                [gH264Clients removeObject:@(client_fd)];
                                 close(client_fd);
+                                TVLog(@"✅ 客户端断开，剩余连接数: %lu", (unsigned long)gH264Clients.count);
                                 
-                                if (gIsCaptureStarted) {
-                                    [[ScreenCapturer sharedCapturer] endCapture];
-                                    gIsCaptureStarted = NO;
-                                    TVLog(@"✅ 客户端断开，停止捕获");
-                                }
-                                
-                                // ✅ 清理编码器
-                                if (gH264Encoder) {
-                                    [gH264Encoder invalidate];
-                                    gH264Encoder = nil;
-                                    gH264Enabled = NO;
-                                    TVLog(@"✅ 编码器已清理");
+                                // ✅ 所有客户端断开后才停止捕获
+                                if (gH264Clients.count == 0) {
+                                    gH264ClientFd = -1;
+                                    if (gIsCaptureStarted) {
+                                        [[ScreenCapturer sharedCapturer] endCapture];
+                                        gIsCaptureStarted = NO;
+                                        TVLog(@"✅ 所有客户端断开，停止捕获");
+                                    }
+                                    if (gH264Encoder) {
+                                        [gH264Encoder invalidate];
+                                        gH264Encoder = nil;
+                                        gH264Enabled = NO;
+                                        TVLog(@"✅ 编码器已清理");
+                                    }
                                 }
                             });
                         }
