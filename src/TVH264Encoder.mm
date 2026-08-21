@@ -327,24 +327,37 @@
 - (void)encodeFrameInternal:(CVPixelBufferRef)pixelBuffer {
     if (!_compressionSession) return;
 
-    // ✅ 强制生成关键帧
+    CMTime pts = CMTimeMake(CFAbsoluteTimeGetCurrent() * 1000, 1000);
+    CMTime dur = CMTimeMake(1, _fps);
+    VTEncodeInfoFlags flags = 0;
+    
+    // ✅ 强制生成关键帧（使用 kVTEncodeFrameOptionKey_ForceKeyFrame）
     if (_frameCount == 0 || _frameCount % _keyFrameInterval == 0) {
-        VTCompressionSessionForceKeyFrame(_compressionSession);
         if (_frameCount == 0) {
             TVLog(@"🎬 强制生成第一个关键帧");
         }
+        
+        CFDictionaryRef frameProps = NULL;
+        const void *keys[] = {kVTEncodeFrameOptionKey_ForceKeyFrame};
+        const void *values[] = {kCFBooleanTrue};
+        frameProps = CFDictionaryCreate(NULL, keys, values, 1, NULL, NULL);
+        
+        VTCompressionSessionEncodeFrame(_compressionSession,
+                                        pixelBuffer,
+                                        pts,
+                                        dur,
+                                        frameProps, NULL, &flags);
+        
+        if (frameProps) CFRelease(frameProps);
+    } else {
+        VTCompressionSessionEncodeFrame(_compressionSession,
+                                        pixelBuffer,
+                                        pts,
+                                        dur,
+                                        NULL, NULL, &flags);
     }
+    
     _frameCount++;
-
-    CMTime pts = CMTimeMake(CFAbsoluteTimeGetCurrent() * 1000, 1000);
-    CMTime dur = CMTimeMake(1, _fps);
-
-    VTEncodeInfoFlags flags = 0;
-    VTCompressionSessionEncodeFrame(_compressionSession,
-                                    pixelBuffer,
-                                    pts,
-                                    dur,
-                                    NULL, NULL, &flags);
 }
 
 - (void)invalidate {
