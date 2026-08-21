@@ -2238,6 +2238,29 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         return;
     }
 
+    // ✅ 画面变化检测
+    static size_t lastHash = 0;
+    static int frameSkipCounter = 0;
+    
+    frameSkipCounter++;
+    if (frameSkipCounter % 2 == 0) {
+        CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+        uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(pb);
+        size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+        size_t height = CVPixelBufferGetHeight(pb);
+        
+        size_t hash = 0;
+        for (int y = 0; y < height; y += 50) {
+            hash ^= *(size_t *)(base + y * bpr);
+        }
+        CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+        
+        if (hash == lastHash) {
+            return;  // 画面没变化，跳过编码
+        }
+        lastHash = hash;
+    }
+
     // ✅ H264 编码
     if (gH264Encoder && gH264Enabled) {
         int rotQ = gRotationQuad.load(std::memory_order_relaxed);
@@ -5231,6 +5254,40 @@ int main(int argc, const char *argv[]) {
                             gH264ClientFd = client_fd;
                             TVLog(@"✅ 客户端连接");
                             
+                            // ✅ TCP keepalive
+                            int keepalive = 1;
+                            setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+                            
+                            // ✅ recv 超时（30秒）
+                            struct timeval tv;
+                            tv.tv_sec = 30;
+                            tv.tv_usec = 0;
+                            setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                            
+                            // ✅ 启动屏幕捕获
+                            // ✅ 重新初始化编码器（如果不存在）
+                            if (!gH264Encoder) {
+                                gH264Encoder = [[TVH264Encoder alloc] init];
+                                if (gH264Encoder) {
+                                    gH264Enabled = YES;
+                                    [gH264Encoder setFps:30];
+                                    [gH264Encoder setBitrate:2000 * 1024];
+                                    [gH264Encoder setKeyFrameInterval:30];
+                                    
+                                    gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
+                                        if (gH264ClientFd >= 0) {
+                                            uint32_t len = htonl((uint32_t)naluData.length);
+                                            send(gH264ClientFd, &len, 4, 0);
+                                            send(gH264ClientFd, naluData.bytes, naluData.length, 0);
+                                            if (isKeyFrame) {
+                                                TVLog(@"✅ H264关键帧: %lu bytes", (unsigned long)naluData.length);
+                                            }
+                                        }
+                                    };
+                                    TVLog(@"✅ 编码器重新初始化");
+                                }
+                            }
+                            
                             // ✅ 启动屏幕捕获
                             if (!gIsCaptureStarted) {
                                 gIsCaptureStarted = YES;
@@ -5310,6 +5367,14 @@ int main(int argc, const char *argv[]) {
                                     gIsCaptureStarted = NO;
                                     TVLog(@"✅ 客户端断开，停止捕获");
                                 }
+                                
+                                // ✅ 清理编码器
+                                if (gH264Encoder) {
+                                    [gH264Encoder invalidate];
+                                    gH264Encoder = nil;
+                                    gH264Enabled = NO;
+                                    TVLog(@"✅ 编码器已清理");
+                                }
                             });
                         }
                     }
@@ -5321,36 +5386,7 @@ int main(int argc, const char *argv[]) {
             }
         }
                 
-        // ✅ 初始化 H264 编码器
-        gH264Encoder = [[TVH264Encoder alloc] init];
-        if (gH264Encoder) {
-            gH264Enabled = YES;
-            
-            // ✅ 设置编码器参数
-            [gH264Encoder setFps:30];                    // 30 FPS
-            [gH264Encoder setBitrate:2000 * 1024];       // 2 Mbps
-            [gH264Encoder setKeyFrameInterval:30];       // 每30帧一个关键帧（1秒1个）
-            
-            TVLog(@"✅ H264编码器参数: FPS=%d, Bitrate=%dKbps, KeyInt=%d",
-                  [gH264Encoder getFps],
-                  [gH264Encoder getBitrate] / 1024,
-                  [gH264Encoder getKeyFrameInterval]);
-            
-            gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-                // ✅ 发送给已连接的 H264 客户端
-                if (gH264ClientFd >= 0) {
-                    uint32_t len = htonl((uint32_t)naluData.length);
-                    send(gH264ClientFd, &len, 4, 0);
-                    send(gH264ClientFd, naluData.bytes, naluData.length, 0);
-                    
-                    // 只在关键帧时打印，避免刷屏
-                    if (isKeyFrame) {
-                        TVLog(@"✅ H264关键帧: %lu bytes", (unsigned long)naluData.length);
-                    }
-                }
-            };
-            TVLog(@"✅ H264 encoder initialized");
-        }
+  
         initializeTilingOrReset();
         // initializeAndRunRfbServer();
 
