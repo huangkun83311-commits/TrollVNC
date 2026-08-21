@@ -112,6 +112,8 @@ static BOOL gH264Enabled = NO;
 static int gTcpSocketFd = -1;
 static int gH264ClientFd = -1;  // ✅ 添加这行
 static NSMutableArray<NSNumber *> *gH264Clients = nil;  // ✅ 客户端列表
+static size_t gLastHash = 0;  // ✅ 画面变化检测
+static int gFrameSkipCounter = 0;  // ✅ 帧计数
 
 #define TV_COMMAND_PORT 12346
 static int gCommandServerFd = -1;
@@ -2241,11 +2243,8 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     }
 
     // ✅ 画面变化检测
-    static size_t lastHash = 0;
-    static int frameSkipCounter = 0;
-    
-    frameSkipCounter++;
-    if (frameSkipCounter % 2 == 0) {
+    gFrameSkipCounter++;
+    if (gFrameSkipCounter % 2 == 0) {
         CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
         uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(pb);
         size_t bpr = CVPixelBufferGetBytesPerRow(pb);
@@ -2257,10 +2256,10 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         }
         CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
         
-        if (hash == lastHash) {
+        if (hash == gLastHash) {
             return;  // 画面没变化，跳过编码
         }
-        lastHash = hash;
+        gLastHash = hash;
     }
 
     // ✅ H264 编码
