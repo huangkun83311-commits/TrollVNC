@@ -24,7 +24,7 @@
     int _keyFrameInterval;
     int _profile;
     
-    // ✅ 帧计数器
+    // 帧计数器
     int _frameCount;
 }
 
@@ -40,8 +40,8 @@
         // 默认参数
         _fps = 30;
         _bitrate = 3 * 1024 * 1024;  // 3Mbps
-        _keyFrameInterval = 30;  // ✅ 每30帧一个关键帧（1秒）
-        _profile = 0;  // ✅ Baseline（兼容性最好）
+        _keyFrameInterval = 30;  // 每30帧一个关键帧（1秒）
+        _profile = 0;  // Baseline（兼容性最好）
         _frameCount = 0;
     }
     return self;
@@ -76,7 +76,7 @@
 - (void)setKeyFrameInterval:(int)interval {
     if (interval != _keyFrameInterval && interval > 0) {
         _keyFrameInterval = interval;
-        _frameCount = 0;  // ✅ 重置帧计数
+        _frameCount = 0;
         [self rebuildSessionIfNeeded];
         TVLog(@"H264: KeyFrameInterval set to %d", _keyFrameInterval);
     }
@@ -307,7 +307,7 @@
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ProfileLevel, profile);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(keyint));
-    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));  // ✅ 每1秒一个关键帧
+    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitrate));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)@[@(bitrate / 8), @1.0]);
@@ -318,7 +318,7 @@
     _currentHeight = height;
     _currentRotation = rotation;
     _currentScale = scale;
-    _frameCount = 0;  // ✅ 重置帧计数
+    _frameCount = 0;
     
     TVLog(@"H264 encoder rebuilt: %dx%d, fps=%d, bitrate=%d, keyint=%d, profile=%d",
           width, height, fps, bitrate, keyint, _profile);
@@ -331,7 +331,7 @@
     CMTime dur = CMTimeMake(1, _fps);
     VTEncodeInfoFlags flags = 0;
     
-    // ✅ 强制生成关键帧（使用 kVTEncodeFrameOptionKey_ForceKeyFrame）
+    // 强制生成关键帧（使用 kVTEncodeFrameOptionKey_ForceKeyFrame）
     if (_frameCount == 0 || _frameCount % _keyFrameInterval == 0) {
         if (_frameCount == 0) {
             TVLog(@"🎬 强制生成第一个关键帧");
@@ -391,8 +391,8 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
     BOOL keyFrame = NO;
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
-        CFDictionaryRef dict = CFArrayGetValueAtIndex(attachments, 0);
-        CFBooleanRef notSync = CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
+        CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        CFBooleanRef notSync = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
         keyFrame = !notSync || !CFBooleanGetValue(notSync);
     }
     
@@ -416,7 +416,7 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
         memcpy(&NALUnitLength, dataPointer + bufferOffset, AVCCHeaderLength);
         NALUnitLength = CFSwapInt32BigToHost(NALUnitLength);
 
-        // ✅ 添加起始码，确保是标准 Annex-B 格式
+        // 添加起始码，确保是标准 Annex-B 格式
         const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
         NSMutableData *naluWithStartCode = [NSMutableData data];
         [naluWithStartCode appendBytes:startCode length:4];
