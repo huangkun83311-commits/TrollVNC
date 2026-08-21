@@ -40,6 +40,7 @@
 #import <sys/sysctl.h>
 #import <unistd.h>
 #import <vector>
+#import <netinet/tcp.h>
 
 #import "BulletinManager.h"
 #import "ClipboardManager.h"
@@ -5254,15 +5255,20 @@ int main(int argc, const char *argv[]) {
                             gH264ClientFd = client_fd;
                             TVLog(@"✅ 客户端连接");
                             
-                            // ✅ TCP keepalive
+                            // ✅ TCP keepalive（和 VNC 一样）
                             int keepalive = 1;
                             setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
                             
-                            // ✅ recv 超时（30秒）
-                            struct timeval tv;
-                            tv.tv_sec = 30;
-                            tv.tv_usec = 0;
-                            setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                            int keepidle = 30;
+                            setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPALIVE, &keepidle, sizeof(keepidle));
+                            
+                            int keepintvl = 5;
+                            setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+                            
+                            int keepcnt = 3;
+                            setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
+                            
+
                             
                             // ✅ 启动屏幕捕获
                             // ✅ 重新初始化编码器（如果不存在）
@@ -5405,5 +5411,4 @@ int main(int argc, const char *argv[]) {
     cleanupAndExit(EXIT_SUCCESS);
 
     return EXIT_SUCCESS;
-   
 }
