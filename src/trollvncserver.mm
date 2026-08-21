@@ -2234,7 +2234,6 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     }
 
     // ✅ H264 编码
-    // ✅ H264 编码
     if (gH264Encoder && gH264Enabled) {
         int rotQ = gRotationQuad.load(std::memory_order_relaxed);
         
@@ -5100,13 +5099,14 @@ static void tvHandleCommand(const char *cmd) {
                 [gH264Encoder setProfile:2];
             }
             TVLog(@"命令: SET_PROFILE %s", valueStr);
-        } else if (strcmp(command, "GET_STATUS") == 0) {
-            TVLog(@"状态: FPS=%d, Bitrate=%dKbps, KeyInt=%d, Profile=%d",
-                  [gH264Encoder getFps],
-                  [gH264Encoder getBitrate] / 1024,
-                  [gH264Encoder getKeyFrameInterval],
-                  [gH264Encoder getProfile]);
         }
+    } else if (strcmp(cmd, "GET_STATUS") == 0) {
+        // ✅ GET_STATUS 移到这里，因为它不需要参数
+        TVLog(@"状态: FPS=%d, Bitrate=%dKbps, KeyInt=%d, Profile=%d",
+              [gH264Encoder getFps],
+              [gH264Encoder getBitrate] / 1024,
+              [gH264Encoder getKeyFrameInterval],
+              [gH264Encoder getProfile]);
     }
 }
 
