@@ -109,6 +109,7 @@ static BOOL gOrientationSyncEnabled = YES;
 static TVH264Encoder *gH264Encoder = nil;
 static BOOL gH264Enabled = NO;
 static int gTcpSocketFd = -1;
+static int gH264ClientFd = -1;  // ✅ 添加这行
 
 #define TV_COMMAND_PORT 12346
 static int gCommandServerFd = -1;
@@ -2233,8 +2234,16 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     }
 
     // ✅ H264 编码
+    // ✅ H264 编码
     if (gH264Encoder && gH264Enabled) {
         int rotQ = gRotationQuad.load(std::memory_order_relaxed);
+        
+        // 每30帧打印一次日志
+        static int h264FrameCount = 0;
+        if (h264FrameCount++ % 30 == 0) {
+            TVLog(@"🎥 H264编码中: 帧#%d, rotQ=%d", h264FrameCount, rotQ);
+        }
+        
         [gH264Encoder encodePixelBuffer:pb orientation:rotQ scale:gScale];
         return;
     }
@@ -4369,6 +4378,14 @@ static void prepareClipboardManager(void) {
 }
 
 static void prepareScreenCapturer(void) {
+    // ✅ 设置默认帧率
+    if (gFpsMin == 0 && gFpsPref == 0 && gFpsMax == 0) {
+        gFpsMin = 30;
+        gFpsPref = 30;
+        gFpsMax = 30;
+        TVLog(@"设置默认FPS: 30");
+    }
+    
     // Apply preferred frame rate (if provided)
     if (gFpsMin > 0 || gFpsPref > 0 || gFpsMax > 0) {
         TVLog(@"Applying preferred FPS to ScreenCapturer: min=%d pref=%d max=%d", gFpsMin, gFpsPref, gFpsMax);
@@ -5054,6 +5071,93 @@ static void ensureSingleton(const char *argv[]) {
 }
 #endif
 
+#pragma mark - Command Server Implementation
+
+static void tvHandleCommand(const char *cmd) {
+    if (!cmd || !gH264Encoder) return;
+    
+    char command[32];
+    char valueStr[64];
+    
+    if (sscanf(cmd, "%31s %63s", command, valueStr) == 2) {
+        int value = atoi(valueStr);
+        
+        if (strcmp(command, "SET_FPS") == 0) {
+            [gH264Encoder setFps:value];
+            TVLog(@"命令: SET_FPS %d", value);
+        } else if (strcmp(command, "SET_BITRATE") == 0) {
+            [gH264Encoder setBitrate:value * 1024];
+            TVLog(@"命令: SET_BITRATE %d Kbps", value);
+        } else if (strcmp(command, "SET_KEYINT") == 0) {
+            [gH264Encoder setKeyFrameInterval:value];
+            TVLog(@"命令: SET_KEYINT %d", value);
+        } else if (strcmp(command, "SET_PROFILE") == 0) {
+            if (strcmp(valueStr, "baseline") == 0) {
+                [gH264Encoder setProfile:0];
+            } else if (strcmp(valueStr, "main") == 0) {
+                [gH264Encoder setProfile:1];
+            } else if (strcmp(valueStr, "high") == 0) {
+                [gH264Encoder setProfile:2];
+            }
+            TVLog(@"命令: SET_PROFILE %s", valueStr);
+        } else if (strcmp(command, "GET_STATUS") == 0) {
+            TVLog(@"状态: FPS=%d, Bitrate=%dKbps, KeyInt=%d, Profile=%d",
+                  [gH264Encoder getFps],
+                  [gH264Encoder getBitrate] / 1024,
+                  [gH264Encoder getKeyFrameInterval],
+                  [gH264Encoder getProfile]);
+        }
+    }
+}
+
+static void tvStartCommandServer(void) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(TV_COMMAND_PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return;
+    }
+    
+    if (listen(fd, 8) < 0) {
+        close(fd);
+        return;
+    }
+    
+    gCommandServerFd = fd;
+    TVLog(@"命令服务器监听端口 %d", TV_COMMAND_PORT);
+    
+    while (1) {
+        struct sockaddr_in caddr;
+        socklen_t clen = sizeof(caddr);
+        int cfd = accept(fd, (struct sockaddr *)&caddr, &clen);
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        
+        char buf[256];
+        ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
+        if (n > 0) {
+            buf[n] = '\0';
+            char *p = strpbrk(buf, "\r\n");
+            if (p) *p = '\0';
+            TVLog(@"收到命令: %s", buf);
+            tvHandleCommand(buf);
+        }
+        close(cfd);
+    }
+}
+
 int main(int argc, const char *argv[]) {
 
     /* Drop privileges: this program should run as mobile */
@@ -5097,7 +5201,7 @@ int main(int argc, const char *argv[]) {
         TVLog(@"✅ Screen capture started (forced for H264)");
         
         // ✅ 创建 TCP 服务器监听 0.0.0.0:12345
-        static int h264_client_fd = -1;
+        gH264ClientFd = -1;
         
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (server_fd >= 0) {
@@ -5121,8 +5225,8 @@ int main(int argc, const char *argv[]) {
                         socklen_t clen = sizeof(caddr);
                         int client_fd = accept(server_fd, (struct sockaddr *)&caddr, &clen);
                         if (client_fd >= 0) {
-                            if (h264_client_fd >= 0) close(h264_client_fd);
-                            h264_client_fd = client_fd;
+                            if (gH264ClientFd >= 0) close(gH264ClientFd);
+                            gH264ClientFd = client_fd;
                             TVLog(@"✅ H264 client connected");
                         }
                     }
@@ -5140,10 +5244,11 @@ int main(int argc, const char *argv[]) {
             gH264Enabled = YES;
             gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
                 // ✅ 发送给已连接的 H264 客户端
-                if (h264_client_fd >= 0) {
+                if (gH264ClientFd >= 0) {
                     uint32_t len = htonl((uint32_t)naluData.length);
-                    send(h264_client_fd, &len, 4, 0);
-                    send(h264_client_fd, naluData.bytes, naluData.length, 0);
+                    send(gH264ClientFd, &len, 4, 0);
+                    send(gH264ClientFd, naluData.bytes, naluData.length, 0);
+                    TVLog(@"✅ H264 sent: %lu bytes", (unsigned long)naluData.length);
                 }
                 
                 TVLog(@"H264 sent: %lu bytes, keyframe: %@", 
@@ -5173,102 +5278,3 @@ int main(int argc, const char *argv[]) {
     return EXIT_SUCCESS;
    
 }
- #pragma mark - Command Server
-    
-    #define TV_COMMAND_PORT 12346
-
-    
-    static void tvHandleCommand(const char *cmd) {
-        if (!cmd || !gH264Encoder) return;
-        
-        char command[32];
-        char valueStr[64];
-        
-        if (sscanf(cmd, "%31s %63s", command, valueStr) == 2) {
-            int value = atoi(valueStr);
-            
-            if (strcmp(command, "SET_FPS") == 0) {
-                [gH264Encoder setFps:value];
-                TVLog(@"Command: SET_FPS %d", value);
-            } else if (strcmp(command, "SET_BITRATE") == 0) {
-                [gH264Encoder setBitrate:value * 1024];
-                TVLog(@"Command: SET_BITRATE %d Kbps", value);
-            } else if (strcmp(command, "SET_KEYINT") == 0) {
-                [gH264Encoder setKeyFrameInterval:value];
-                TVLog(@"Command: SET_KEYINT %d", value);
-            } else if (strcmp(command, "SET_PROFILE") == 0) {
-                if (strcmp(valueStr, "baseline") == 0) {
-                    [gH264Encoder setProfile:0];
-                } else if (strcmp(valueStr, "main") == 0) {
-                    [gH264Encoder setProfile:1];
-                } else if (strcmp(valueStr, "high") == 0) {
-                    [gH264Encoder setProfile:2];
-                }
-                TVLog(@"Command: SET_PROFILE %s", valueStr);
-            } else if (strcmp(command, "GET_STATUS") == 0) {
-                TVLog(@"Command: GET_STATUS - FPS=%d, Bitrate=%dKbps, KeyInt=%d, Profile=%d",
-                      [gH264Encoder getFps],
-                      [gH264Encoder getBitrate] / 1024,
-                      [gH264Encoder getKeyFrameInterval],
-                      [gH264Encoder getProfile]);
-            } else {
-                TVLog(@"Unknown command: %s", cmd);
-            }
-        } else {
-            TVLog(@"Invalid command format: %s", cmd);
-        }
-    }
-    
-    static void tvStartCommandServer(void) {
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) {
-            TVLog(@"Command server: socket failed");
-            return;
-        }
-        
-        int yes = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-        
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(TV_COMMAND_PORT);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        
-        if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            TVLog(@"Command server: bind failed: %s", strerror(errno));
-            close(fd);
-            return;
-        }
-        
-        if (listen(fd, 8) < 0) {
-            TVLog(@"Command server: listen failed: %s", strerror(errno));
-            close(fd);
-            return;
-        }
-        
-        gCommandServerFd = fd;
-        TVLog(@"✅ Command server listening on port %d", TV_COMMAND_PORT);
-        TVLog(@"   Commands: SET_FPS <1-120>, SET_BITRATE <100-50000>, SET_KEYINT <1-300>, SET_PROFILE <baseline|main|high>, GET_STATUS");
-        
-        while (1) {
-            struct sockaddr_in caddr;
-            socklen_t clen = sizeof(caddr);
-            int cfd = accept(fd, (struct sockaddr *)&caddr, &clen);
-            if (cfd < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-            
-            char buf[256];
-            ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
-            if (n > 0) {
-                buf[n] = '\0';
-                char *p = strchr(buf, '\n');
-                if (p) *p = '\0';
-                TVLog(@"Command received: %s", buf);
-                tvHandleCommand(buf);
-            }
-            close(cfd);
-        }
-    }
