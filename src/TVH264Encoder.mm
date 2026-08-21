@@ -18,13 +18,10 @@
     void *_rotateScratch;
     size_t _rotateScratchSize;
     
-    // H264 动态参数
     int _fps;
     int _bitrate;
     int _keyFrameInterval;
     int _profile;
-    
-    // 帧计数器
     int _frameCount;
 }
 
@@ -36,13 +33,12 @@
     self = [super init];
     if (self) {
         _encodeQueue = dispatch_queue_create("com.82flex.trollvnc.h264encoder", DISPATCH_QUEUE_SERIAL);
-        
-        // 默认参数
         _fps = 30;
-        _bitrate = 3 * 1024 * 1024;  // 3Mbps
-        _keyFrameInterval = 30;  // 每30帧一个关键帧（1秒）
-        _profile = 0;  // Baseline（兼容性最好）
+        _bitrate = 3 * 1024 * 1024;
+        _keyFrameInterval = 30;
+        _profile = 0;
         _frameCount = 0;
+        TVLog(@"✅ H264编码器初始化");
     }
     return self;
 }
@@ -90,28 +86,16 @@
     }
 }
 
-- (int)getFps {
-    return _fps;
-}
-
-- (int)getBitrate {
-    return _bitrate;
-}
-
-- (int)getKeyFrameInterval {
-    return _keyFrameInterval;
-}
-
-- (int)getProfile {
-    return _profile;
-}
+- (int)getFps { return _fps; }
+- (int)getBitrate { return _bitrate; }
+- (int)getKeyFrameInterval { return _keyFrameInterval; }
+- (int)getProfile { return _profile; }
 
 #pragma mark - 编码核心
 
 - (void)encodePixelBuffer:(CVPixelBufferRef)pixelBuffer
               orientation:(int)rotationQuad
                     scale:(CGFloat)scale {
-
     if (!pixelBuffer) return;
 
     int srcW = (int)CVPixelBufferGetWidth(pixelBuffer);
@@ -140,9 +124,8 @@
     dispatch_async(_encodeQueue, ^{
         [self rebuildSessionIfNeededWithWidth:outW
                                        height:outH
-                                       rotation:rotationQuad
-                                         scale:scale];
-
+                                     rotation:rotationQuad
+                                        scale:scale];
         [self encodeFrameInternal:finalBuffer];
         CVPixelBufferRelease(finalBuffer);
     });
@@ -152,15 +135,12 @@
                           rotationQuad:(int)rotationQuad
                                outWidth:(int)outW
                               outHeight:(int)outH {
-
     int srcW = (int)CVPixelBufferGetWidth(src);
     int srcH = (int)CVPixelBufferGetHeight(src);
-
     int rotW = (rotationQuad % 2 == 0) ? srcW : srcH;
     int rotH = (rotationQuad % 2 == 0) ? srcH : srcW;
 
     CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
-
     void *srcBase = CVPixelBufferGetBaseAddress(src);
     size_t srcBPR = CVPixelBufferGetBytesPerRow(src);
 
@@ -199,7 +179,6 @@
             CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
             return NULL;
         }
-
         tmpRot = rotBuf;
     } else {
         tmpRot = srcBuf;
@@ -250,7 +229,6 @@
 
     CVPixelBufferUnlockBaseAddress(outBuffer, 0);
     CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
-
     return outBuffer;
 }
 
@@ -285,16 +263,14 @@
                                                   (__bridge void *)self,
                                                   &_compressionSession);
     if (status != noErr) {
-        TVLog(@"VTCompressionSessionCreate failed: %d", status);
+        TVLog(@"❌ VTCompressionSessionCreate failed: %d", status);
         return;
     }
 
-    // 使用动态参数
     int fps = _fps > 0 ? _fps : 30;
     int bitrate = _bitrate > 0 ? _bitrate : 3 * 1024 * 1024;
     int keyint = _keyFrameInterval > 0 ? _keyFrameInterval : fps * 2;
 
-    // 选择 Profile
     CFStringRef profile = kVTProfileLevel_H264_Baseline_AutoLevel;
     switch (_profile) {
         case 0: profile = kVTProfileLevel_H264_Baseline_AutoLevel; break;
@@ -320,8 +296,7 @@
     _currentScale = scale;
     _frameCount = 0;
     
-    TVLog(@"H264 encoder rebuilt: %dx%d, fps=%d, bitrate=%d, keyint=%d, profile=%d",
-          width, height, fps, bitrate, keyint, _profile);
+    TVLog(@"✅ H264 encoder rebuilt: %dx%d, fps=%d, bitrate=%d, keyint=%d", width, height, fps, bitrate, keyint);
 }
 
 - (void)encodeFrameInternal:(CVPixelBufferRef)pixelBuffer {
@@ -331,12 +306,7 @@
     CMTime dur = CMTimeMake(1, _fps);
     VTEncodeInfoFlags flags = 0;
     
-    // 强制生成关键帧（使用 kVTEncodeFrameOptionKey_ForceKeyFrame）
     if (_frameCount == 0 || _frameCount % _keyFrameInterval == 0) {
-        if (_frameCount == 0) {
-            TVLog(@"🎬 强制生成第一个关键帧");
-        }
-        
         CFDictionaryRef frameProps = NULL;
         const void *keys[] = {kVTEncodeFrameOptionKey_ForceKeyFrame};
         const void *values[] = {kCFBooleanTrue};
@@ -347,8 +317,8 @@
                                         pts,
                                         dur,
                                         frameProps, NULL, &flags);
-        
         if (frameProps) CFRelease(frameProps);
+        TVLog(@"🔑 关键帧 #%d", _frameCount);
     } else {
         VTCompressionSessionEncodeFrame(_compressionSession,
                                         pixelBuffer,
@@ -356,7 +326,6 @@
                                         dur,
                                         NULL, NULL, &flags);
     }
-    
     _frameCount++;
 }
 
@@ -367,7 +336,6 @@
         CFRelease(_compressionSession);
         _compressionSession = NULL;
     }
-
     _currentWidth = 0;
     _currentHeight = 0;
     _currentRotation = -1;
@@ -375,19 +343,29 @@
     _frameCount = 0;
 }
 
-#pragma mark - 回调
+#pragma mark - 回调（✅ 合并版 - 修复 SPS/PPS 分开发送问题）
 
 static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
                                             void *sourceFrameRefCon,
                                             OSStatus status,
                                             VTEncodeInfoFlags infoFlags,
                                             CMSampleBufferRef sampleBuffer) {
-    if (status != noErr) return;
-    if (!CMSampleBufferDataIsReady(sampleBuffer)) return;
+    if (status != noErr) {
+        TVLog(@"❌ 编码错误: %d", status);
+        return;
+    }
+    if (!CMSampleBufferDataIsReady(sampleBuffer)) {
+        TVLog(@"⚠️ sampleBuffer 未就绪");
+        return;
+    }
 
     TVH264Encoder *encoder = (__bridge TVH264Encoder *)outputCallbackRefCon;
-    if (!encoder.outputBlock) return;
+    if (!encoder.outputBlock) {
+        TVLog(@"🔴 outputBlock 为 nil！");
+        return;
+    }
 
+    // 判断是否关键帧
     BOOL keyFrame = NO;
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
@@ -396,10 +374,13 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
         keyFrame = !notSync || !CFBooleanGetValue(notSync);
     }
     
+    // ✅ 合并所有 NAL 单元为一个数据包
+    NSMutableData *combinedData = [NSMutableData data];
+    const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+    int nalCount = 0;
+    
+    // 1. 如果是关键帧，提取 SPS/PPS
     if (keyFrame) {
-        TVLog(@"🎬 关键帧！");
-        
-        // ✅ 提取并发送 SPS 和 PPS
         CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
         if (formatDesc) {
             const uint8_t *spsPtr = NULL;
@@ -410,64 +391,74 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
             CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 0, &spsPtr, &spsLen, NULL, NULL);
             CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 1, &ppsPtr, &ppsLen, NULL, NULL);
             
-            if (spsPtr && spsLen > 0 && ppsPtr && ppsLen > 0) {
-                TVLog(@"✅ 发送 SPS(%zu字节) 和 PPS(%zu字节)", spsLen, ppsLen);
-                
-                const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
-                
-                // 发送 SPS
-                NSMutableData *spsData = [NSMutableData data];
-                [spsData appendBytes:startCode length:4];
-                [spsData appendBytes:spsPtr length:spsLen];
-                
-                TVH264EncoderOutputBlock block = encoder.outputBlock;
-                if (block) {
-                    block(spsData, YES);
-                }
-                
-                // 发送 PPS
-                NSMutableData *ppsData = [NSMutableData data];
-                [ppsData appendBytes:startCode length:4];
-                [ppsData appendBytes:ppsPtr length:ppsLen];
-                
-                if (block) {
-                    block(ppsData, YES);
-                }
-            } else {
-                TVLog(@"⚠️ 无法提取 SPS/PPS");
+            if (spsPtr && spsLen > 0) {
+                [combinedData appendBytes:startCode length:4];
+                [combinedData appendBytes:spsPtr length:spsLen];
+                nalCount++;
+                TVLog(@"  ✅ 添加 SPS: %zu 字节", spsLen);
+            }
+            if (ppsPtr && ppsLen > 0) {
+                [combinedData appendBytes:startCode length:4];
+                [combinedData appendBytes:ppsPtr length:ppsLen];
+                nalCount++;
+                TVLog(@"  ✅ 添加 PPS: %zu 字节", ppsLen);
             }
         }
     }
 
+    // 2. 提取 NAL 数据（SEI、IDR、P/B帧等）
     CMBlockBufferRef dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
-    size_t length = 0;
-    size_t totalLength = 0;
-    char *dataPointer = NULL;
-
-    OSStatus blockStatus = CMBlockBufferGetDataPointer(dataBuffer, 0, &length, &totalLength, &dataPointer);
-    if (blockStatus != noErr) return;
+    if (!dataBuffer) {
+        TVLog(@"⚠️ dataBuffer 为 nil");
+        return;
+    }
+    
+    size_t totalLength = CMBlockBufferGetDataLength(dataBuffer);
+    if (totalLength == 0) {
+        TVLog(@"⚠️ 数据长度为 0");
+        return;
+    }
+    
+    uint8_t *dataPointer = malloc(totalLength);
+    if (!dataPointer) {
+        TVLog(@"❌ 内存分配失败");
+        return;
+    }
+    
+    OSStatus blockStatus = CMBlockBufferCopyDataBytes(dataBuffer, 0, totalLength, dataPointer);
+    if (blockStatus != noErr) {
+        free(dataPointer);
+        TVLog(@"❌ 数据复制失败");
+        return;
+    }
 
     static const int AVCCHeaderLength = 4;
     size_t bufferOffset = 0;
 
-    while (bufferOffset < totalLength - AVCCHeaderLength) {
+    while (bufferOffset + AVCCHeaderLength <= totalLength) {
         uint32_t NALUnitLength = 0;
         memcpy(&NALUnitLength, dataPointer + bufferOffset, AVCCHeaderLength);
         NALUnitLength = CFSwapInt32BigToHost(NALUnitLength);
-
-        // 添加起始码，确保是标准 Annex-B 格式
-        const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
-        NSMutableData *naluWithStartCode = [NSMutableData data];
-        [naluWithStartCode appendBytes:startCode length:4];
-        [naluWithStartCode appendBytes:(dataPointer + bufferOffset + AVCCHeaderLength)
-                                length:NALUnitLength];
         
-        TVH264EncoderOutputBlock block = encoder.outputBlock;
-        if (block) {
-            block(naluWithStartCode, keyFrame);
+        if (NALUnitLength == 0 || bufferOffset + AVCCHeaderLength + NALUnitLength > totalLength) {
+            break;
         }
 
+        [combinedData appendBytes:startCode length:4];
+        [combinedData appendBytes:(dataPointer + bufferOffset + AVCCHeaderLength)
+                           length:NALUnitLength];
+        nalCount++;
+
         bufferOffset += AVCCHeaderLength + NALUnitLength;
+    }
+    
+    free(dataPointer);
+
+    // ✅ 一次性发送所有数据
+    if (combinedData.length > 0) {
+        TVLog(@"📤 发送 H264: %lu 字节, NAL数=%d, keyFrame=%@", 
+              (unsigned long)combinedData.length, nalCount, keyFrame ? @"YES" : @"NO");
+        encoder.outputBlock(combinedData, keyFrame);
     }
 }
 
