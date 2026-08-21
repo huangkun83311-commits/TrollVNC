@@ -419,7 +419,7 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
         return;
     }
     
-    uint8_t *dataPointer = malloc(totalLength);
+    uint8_t *dataPointer = (uint8_t *)malloc(totalLength);
     if (!dataPointer) {
         TVLog(@"❌ 内存分配失败");
         return;
