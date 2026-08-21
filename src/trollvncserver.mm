@@ -2233,6 +2233,11 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         return;
     }
 
+    // ✅ 没有客户端时不编码
+    if (gH264ClientFd < 0) {
+        return;
+    }
+
     // ✅ H264 编码
     if (gH264Encoder && gH264Enabled) {
         int rotQ = gRotationQuad.load(std::memory_order_relaxed);
@@ -5195,12 +5200,9 @@ int main(int argc, const char *argv[]) {
         prepareClipboardManager();
         prepareScreenCapturer();
         
-        // ✅ 强制启动屏幕捕获（不依赖 VNC 客户端）
-        gIsCaptureStarted = YES;
-        [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
-        TVLog(@"✅ Screen capture started (forced for H264)");
+
         
-        // ✅ 创建 TCP 服务器监听 0.0.0.0:12345
+              // ✅ 创建 TCP 服务器
         gH264ClientFd = -1;
         
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -5211,13 +5213,13 @@ int main(int argc, const char *argv[]) {
             struct sockaddr_in addr;
             memset(&addr, 0, sizeof(addr));
             addr.sin_family = AF_INET;
-            addr.sin_port = htons(12345);
+            addr.sin_port = htons(gPort);
             addr.sin_addr.s_addr = htonl(INADDR_ANY);
             
             if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
                 listen(server_fd, 8) == 0) {
                 gTcpSocketFd = server_fd;
-                TVLog(@"✅ H264 server listening on 0.0.0.0:12345");
+                TVLog(@"✅ H264 server listening on 0.0.0.0:%d", gPort);
                 
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     while (1) {
@@ -5227,7 +5229,88 @@ int main(int argc, const char *argv[]) {
                         if (client_fd >= 0) {
                             if (gH264ClientFd >= 0) close(gH264ClientFd);
                             gH264ClientFd = client_fd;
-                            TVLog(@"✅ H264 client connected");
+                            TVLog(@"✅ 客户端连接");
+                            
+                            // ✅ 启动屏幕捕获
+                            if (!gIsCaptureStarted) {
+                                gIsCaptureStarted = YES;
+                                [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+                                TVLog(@"✅ 屏幕捕获启动");
+                            }
+                            
+                            // ✅ 接收控制命令
+                            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                char buf[256];
+                                while (1) {
+                                    ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
+                                    if (n <= 0) break;
+                                    buf[n] = '\0';
+                                    
+                                    // 参数调整
+                                    if (strncmp(buf, "SET_FPS ", 8) == 0) {
+                                        int fps = atoi(buf + 8);
+                                        if (fps > 0 && fps <= 120 && gH264Encoder) {
+                                            [gH264Encoder setFps:fps];
+                                        }
+                                    } else if (strncmp(buf, "SET_BITRATE ", 12) == 0) {
+                                        int bitrate = atoi(buf + 12);
+                                        if (bitrate > 0 && gH264Encoder) {
+                                            [gH264Encoder setBitrate:bitrate * 1024];
+                                        }
+                                    } else if (strncmp(buf, "SET_SCALE ", 10) == 0) {
+                                        float scale = atof(buf + 10);
+                                        if (scale > 0 && scale <= 1.0) {
+                                            gScale = scale;
+                                        }
+                                    } else if (strncmp(buf, "SET_KEYINT ", 11) == 0) {
+                                        int keyint = atoi(buf + 11);
+                                        if (keyint > 0 && gH264Encoder) {
+                                            [gH264Encoder setKeyFrameInterval:keyint];
+                                        }
+                                    } else if (strncmp(buf, "SET_PROFILE ", 12) == 0) {
+                                        if (strncmp(buf + 12, "baseline", 8) == 0) {
+                                            [gH264Encoder setProfile:0];
+                                        } else if (strncmp(buf + 12, "main", 4) == 0) {
+                                            [gH264Encoder setProfile:1];
+                                        } else if (strncmp(buf + 12, "high", 4) == 0) {
+                                            [gH264Encoder setProfile:2];
+                                        }
+                                    } else if (strncmp(buf, "GET_STATUS", 10) == 0) {
+                                        TVLog(@"状态: FPS=%d, Bitrate=%dKbps, KeyInt=%d, Profile=%d, Scale=%.2f",
+                                              [gH264Encoder getFps],
+                                              [gH264Encoder getBitrate] / 1024,
+                                              [gH264Encoder getKeyFrameInterval],
+                                              [gH264Encoder getProfile],
+                                              gScale);
+                                    }
+                                    // 控制命令（调用原本的 ptrAddEvent/kbdAddEvent）
+                                    else if (strncmp(buf, "PTR ", 4) == 0) {
+                                        int buttonMask, x, y;
+                                        if (sscanf(buf, "PTR %d %d %d", &buttonMask, &x, &y) == 3) {
+                                            ptrAddEvent(buttonMask, x, y, NULL);
+                                        }
+                                    } else if (strncmp(buf, "KEY ", 4) == 0) {
+                                        char action[16];
+                                        unsigned long keysym;
+                                        if (sscanf(buf, "KEY %15s %lu", action, &keysym) == 2) {
+                                            rfbBool down = (strcmp(action, "down") == 0) ? TRUE : FALSE;
+                                            kbdAddEvent(down, (rfbKeySym)keysym, NULL);
+                                        }
+                                    }
+                                }
+                                
+                                // ✅ 客户端断开，停止捕获
+                                if (gH264ClientFd == client_fd) {
+                                    gH264ClientFd = -1;
+                                }
+                                close(client_fd);
+                                
+                                if (gIsCaptureStarted) {
+                                    [[ScreenCapturer sharedCapturer] endCapture];
+                                    gIsCaptureStarted = NO;
+                                    TVLog(@"✅ 客户端断开，停止捕获");
+                                }
+                            });
                         }
                     }
                 });
