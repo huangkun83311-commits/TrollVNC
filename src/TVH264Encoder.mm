@@ -398,6 +398,45 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
     
     if (keyFrame) {
         TVLog(@"🎬 关键帧！");
+        
+        // ✅ 提取并发送 SPS 和 PPS
+        CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
+        if (formatDesc) {
+            const uint8_t *spsPtr = NULL;
+            size_t spsLen = 0;
+            const uint8_t *ppsPtr = NULL;
+            size_t ppsLen = 0;
+            
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 0, &spsPtr, &spsLen, NULL, NULL);
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 1, &ppsPtr, &ppsLen, NULL, NULL);
+            
+            if (spsPtr && spsLen > 0 && ppsPtr && ppsLen > 0) {
+                TVLog(@"✅ 发送 SPS(%zu字节) 和 PPS(%zu字节)", spsLen, ppsLen);
+                
+                const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+                
+                // 发送 SPS
+                NSMutableData *spsData = [NSMutableData data];
+                [spsData appendBytes:startCode length:4];
+                [spsData appendBytes:spsPtr length:spsLen];
+                
+                TVH264EncoderOutputBlock block = encoder.outputBlock;
+                if (block) {
+                    block(spsData, YES);
+                }
+                
+                // 发送 PPS
+                NSMutableData *ppsData = [NSMutableData data];
+                [ppsData appendBytes:startCode length:4];
+                [ppsData appendBytes:ppsPtr length:ppsLen];
+                
+                if (block) {
+                    block(ppsData, YES);
+                }
+            } else {
+                TVLog(@"⚠️ 无法提取 SPS/PPS");
+            }
+        }
     }
 
     CMBlockBufferRef dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
