@@ -375,9 +375,17 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
     TVH264Encoder *encoder = (__bridge TVH264Encoder *)outputCallbackRefCon;
     if (!encoder.outputBlock) return;
 
-    bool keyFrame = !CFDictionaryContainsKey(
-        (CFDictionaryRef)CFArrayGetValueAtIndex(CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true), 0),
-        (const void *)kCMSampleAttachmentKey_NotSync);
+    BOOL keyFrame = NO;
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+    if (attachments && CFArrayGetCount(attachments) > 0) {
+        CFDictionaryRef dict = CFArrayGetValueAtIndex(attachments, 0);
+        CFBooleanRef notSync = CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
+        keyFrame = !notSync || !CFBooleanGetValue(notSync);
+    }
+    
+    if (keyFrame) {
+        TVLog(@"🎬 关键帧！");
+    }
 
     CMBlockBufferRef dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
     size_t length = 0;
