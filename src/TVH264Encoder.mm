@@ -23,6 +23,9 @@
     int _bitrate;
     int _keyFrameInterval;
     int _profile;
+    
+    // ✅ 帧计数器
+    int _frameCount;
 }
 
 @end
@@ -37,8 +40,9 @@
         // 默认参数
         _fps = 30;
         _bitrate = 3 * 1024 * 1024;  // 3Mbps
-        _keyFrameInterval = 60;
-        _profile = 2;  // High
+        _keyFrameInterval = 30;  // ✅ 每30帧一个关键帧（1秒）
+        _profile = 0;  // ✅ Baseline（兼容性最好）
+        _frameCount = 0;
     }
     return self;
 }
@@ -72,6 +76,7 @@
 - (void)setKeyFrameInterval:(int)interval {
     if (interval != _keyFrameInterval && interval > 0) {
         _keyFrameInterval = interval;
+        _frameCount = 0;  // ✅ 重置帧计数
         [self rebuildSessionIfNeeded];
         TVLog(@"H264: KeyFrameInterval set to %d", _keyFrameInterval);
     }
@@ -290,18 +295,19 @@
     int keyint = _keyFrameInterval > 0 ? _keyFrameInterval : fps * 2;
 
     // 选择 Profile
-    CFStringRef profile = kVTProfileLevel_H264_High_AutoLevel;
+    CFStringRef profile = kVTProfileLevel_H264_Baseline_AutoLevel;
     switch (_profile) {
         case 0: profile = kVTProfileLevel_H264_Baseline_AutoLevel; break;
         case 1: profile = kVTProfileLevel_H264_Main_AutoLevel; break;
         case 2: profile = kVTProfileLevel_H264_High_AutoLevel; break;
-        default: profile = kVTProfileLevel_H264_High_AutoLevel; break;
+        default: profile = kVTProfileLevel_H264_Baseline_AutoLevel; break;
     }
 
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ProfileLevel, profile);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(keyint));
+    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));  // ✅ 每1秒一个关键帧
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitrate));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)@[@(bitrate / 8), @1.0]);
@@ -312,6 +318,7 @@
     _currentHeight = height;
     _currentRotation = rotation;
     _currentScale = scale;
+    _frameCount = 0;  // ✅ 重置帧计数
     
     TVLog(@"H264 encoder rebuilt: %dx%d, fps=%d, bitrate=%d, keyint=%d, profile=%d",
           width, height, fps, bitrate, keyint, _profile);
@@ -320,8 +327,17 @@
 - (void)encodeFrameInternal:(CVPixelBufferRef)pixelBuffer {
     if (!_compressionSession) return;
 
+    // ✅ 强制生成关键帧
+    if (_frameCount == 0 || _frameCount % _keyFrameInterval == 0) {
+        VTCompressionSessionForceKeyFrame(_compressionSession);
+        if (_frameCount == 0) {
+            TVLog(@"🎬 强制生成第一个关键帧");
+        }
+    }
+    _frameCount++;
+
     CMTime pts = CMTimeMake(CFAbsoluteTimeGetCurrent() * 1000, 1000);
-    CMTime dur = CMTimeMake(1, 30);
+    CMTime dur = CMTimeMake(1, _fps);
 
     VTEncodeInfoFlags flags = 0;
     VTCompressionSessionEncodeFrame(_compressionSession,
@@ -343,6 +359,7 @@
     _currentHeight = 0;
     _currentRotation = -1;
     _currentScale = 0;
+    _frameCount = 0;
 }
 
 #pragma mark - 回调
@@ -378,12 +395,16 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
         memcpy(&NALUnitLength, dataPointer + bufferOffset, AVCCHeaderLength);
         NALUnitLength = CFSwapInt32BigToHost(NALUnitLength);
 
-        NSData *naluData = [[NSData alloc] initWithBytes:(dataPointer + bufferOffset + AVCCHeaderLength)
-                                                  length:NALUnitLength];
+        // ✅ 添加起始码，确保是标准 Annex-B 格式
+        const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+        NSMutableData *naluWithStartCode = [NSMutableData data];
+        [naluWithStartCode appendBytes:startCode length:4];
+        [naluWithStartCode appendBytes:(dataPointer + bufferOffset + AVCCHeaderLength)
+                                length:NALUnitLength];
         
         TVH264EncoderOutputBlock block = encoder.outputBlock;
         if (block) {
-            block(naluData, keyFrame);
+            block(naluWithStartCode, keyFrame);
         }
 
         bufferOffset += AVCCHeaderLength + NALUnitLength;
