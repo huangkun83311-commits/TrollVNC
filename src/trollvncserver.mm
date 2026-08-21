@@ -114,6 +114,27 @@ static int gH264ClientFd = -1;  // ✅ 添加这行
 static NSMutableArray<NSNumber *> *gH264Clients = nil;  // ✅ 客户端列表
 static size_t gLastHash = 0;  // ✅ 画面变化检测
 static int gFrameSkipCounter = 0;  // ✅ 帧计数
+// ✅ RFB 协议常量
+#define RFB_ENCODING_H264 50
+#define RFB_FLAG_RESET_CONTEXT 1
+#define RFB_FLAG_RESET_ALL_CONTEXTS 2
+
+#define RFB_MSG_FRAMEBUFFER_UPDATE 0
+#define RFB_MSG_SET_COLOUR_MAP 1
+#define RFB_MSG_BELL 2
+#define RFB_MSG_SERVER_CUT_TEXT 3
+#define RFB_MSG_POINTER_EVENT 5
+#define RFB_MSG_KEY_EVENT 4
+#define RFB_MSG_CLIENT_CUT_TEXT 6
+#define RFB_MSG_SET_ENCODINGS 2
+
+// 客户端消息
+#define RFB_CLIENT_SET_PIXEL_FORMAT 0
+#define RFB_CLIENT_SET_ENCODINGS 2
+#define RFB_CLIENT_FRAMEBUFFER_UPDATE_REQUEST 3
+#define RFB_CLIENT_KEY_EVENT 4
+#define RFB_CLIENT_POINTER_EVENT 5
+#define RFB_CLIENT_CUT_TEXT 6
 
 #define TV_COMMAND_PORT 12346
 static int gCommandServerFd = -1;
@@ -2222,6 +2243,63 @@ NS_INLINE void unlockAllClientsBlocking(void) {
         pthread_mutex_unlock(&cl->sendMutex);
     }
     rfbReleaseClientIterator(it);
+}
+
+// ✅ RFB 发送函数
+static void rfbSendU8(int fd, uint8_t v) { send(fd, &v, 1, 0); }
+static void rfbSendU16(int fd, uint16_t v) { uint16_t n = htons(v); send(fd, &n, 2, 0); }
+static void rfbSendU32(int fd, uint32_t v) { uint32_t n = htonl(v); send(fd, &n, 4, 0); }
+
+static void rfbSendFramebufferUpdateHeader(int fd, int rects) {
+    rfbSendU8(fd, RFB_MSG_FRAMEBUFFER_UPDATE);
+    rfbSendU8(fd, 0); // padding
+    rfbSendU16(fd, rects);
+}
+
+static void rfbSendH264Rect(int fd, int x, int y, int w, int h, NSData *naluData, uint32_t flags) {
+    rfbSendU16(fd, x);
+    rfbSendU16(fd, y);
+    rfbSendU16(fd, w);
+    rfbSendU16(fd, h);
+    rfbSendU32(fd, RFB_ENCODING_H264);
+    rfbSendU32(fd, (uint32_t)naluData.length);
+    rfbSendU32(fd, flags);
+    send(fd, naluData.bytes, naluData.length, 0);
+}
+
+// ✅ RFB 握手
+static void rfbSendHandshake(int fd) {
+    send(fd, "RFB 003.008\n", 12, 0);
+}
+
+static void rfbSendSecurityTypes(int fd) {
+    uint8_t data[] = {0x01, 0x01};
+    send(fd, data, 2, 0);
+}
+
+static void rfbSendSecurityResult(int fd) {
+    rfbSendU32(fd, 0);
+}
+
+static void rfbSendServerInit(int fd, int width, int height, const char *name) {
+    rfbSendU16(fd, width);
+    rfbSendU16(fd, height);
+    rfbSendU8(fd, 32);
+    rfbSendU8(fd, 24);
+    rfbSendU8(fd, 0);
+    rfbSendU8(fd, 1);
+    rfbSendU16(fd, 255);
+    rfbSendU16(fd, 255);
+    rfbSendU16(fd, 255);
+    rfbSendU8(fd, 16);
+    rfbSendU8(fd, 8);
+    rfbSendU8(fd, 0);
+    rfbSendU8(fd, 0);
+    rfbSendU8(fd, 0);
+    rfbSendU8(fd, 0);
+    uint32_t nameLen = htonl((uint32_t)strlen(name));
+    send(fd, &nameLen, 4, 0);
+    send(fd, name, strlen(name), 0);
 }
 
 static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
@@ -5255,7 +5333,42 @@ int main(int argc, const char *argv[]) {
                             if (!gH264Clients) gH264Clients = [NSMutableArray array];
                             [gH264Clients addObject:@(client_fd)];
                             gH264ClientFd = client_fd;
+                            gLastHash = 0;
+                            gFrameSkipCounter = 0;
                             TVLog(@"✅ 客户端连接，当前连接数: %lu", (unsigned long)gH264Clients.count);
+                            
+                            // ✅ RFB 握手完整流程
+                            // 1. 服务器发送协议版本
+                            rfbSendHandshake(client_fd);
+                            
+                            // 2. 接收客户端协议版本（12字节）
+                            char versionBuf[12];
+                            int received = 0;
+                            while (received < 12) {
+                                ssize_t n = recv(client_fd, versionBuf + received, 12 - received, 0);
+                                if (n <= 0) { close(client_fd); break; }
+                                received += (int)n;
+                            }
+                            
+                            // 3. 服务器发送安全类型
+                            rfbSendSecurityTypes(client_fd);
+                            
+                            // 4. 接收客户端选择的安全类型（1字节）
+                            uint8_t securityChoice;
+                            recv(client_fd, &securityChoice, 1, 0);
+                            
+                            // 5. 发送安全结果（成功）
+                            rfbSendSecurityResult(client_fd);
+                            
+                            // 6. 接收 ClientInit（1字节共享标志）
+                            uint8_t shared;
+                            recv(client_fd, &shared, 1, 0);
+                            
+                            // 7. 发送 ServerInit
+                            rfbSendServerInit(client_fd, gWidth, gHeight, [gDesktopName UTF8String]);
+                            
+                            TVLog(@"✅ RFB 握手完成");
+                            
                             
                             // ✅ TCP keepalive（和 VNC 一样）
                             int keepalive = 1;
@@ -5283,13 +5396,17 @@ int main(int argc, const char *argv[]) {
                                     [gH264Encoder setKeyFrameInterval:30];
                                     
                                     gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-                                        // ✅ 广播给所有客户端
-                                        uint32_t len = htonl((uint32_t)naluData.length);
+                                        // ✅ RFB 格式广播 H264
                                         NSArray *clients = [gH264Clients copy];
                                         for (NSNumber *num in clients) {
                                             int fd = num.intValue;
-                                            send(fd, &len, 4, 0);
-                                            send(fd, naluData.bytes, naluData.length, 0);
+                                            
+                                            // 发送 FramebufferUpdate 头
+                                            rfbSendFramebufferUpdateHeader(fd, 1);
+                                            
+                                            // 发送 H264 rect
+                                            uint32_t flags = isKeyFrame ? RFB_FLAG_RESET_ALL_CONTEXTS : 0;
+                                            rfbSendH264Rect(fd, 0, 0, gWidth, gHeight, naluData, flags);
                                         }
                                         if (isKeyFrame) {
                                             TVLog(@"✅ H264关键帧: %lu bytes, 客户端数: %lu", (unsigned long)naluData.length, (unsigned long)clients.count);
@@ -5310,61 +5427,53 @@ int main(int argc, const char *argv[]) {
                             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                                 char buf[256];
                                 while (1) {
-                                    ssize_t n = recv(client_fd, buf, sizeof(buf) - 1, 0);
+                                    uint8_t msgType;
+                                    ssize_t n = recv(client_fd, &msgType, 1, 0);
                                     if (n <= 0) break;
-                                    buf[n] = '\0';
                                     
-                                    // 参数调整
-                                    if (strncmp(buf, "SET_FPS ", 8) == 0) {
-                                        int fps = atoi(buf + 8);
-                                        if (fps > 0 && fps <= 120 && gH264Encoder) {
-                                            [gH264Encoder setFps:fps];
+                                    if (msgType == RFB_CLIENT_POINTER_EVENT) {
+                                        // PointerEvent: [type][mask][x][y]
+                                        uint8_t mask;
+                                        uint16_t x, y;
+                                        recv(client_fd, &mask, 1, 0);
+                                        recv(client_fd, &x, 2, 0);
+                                        recv(client_fd, &y, 2, 0);
+                                        ptrAddEvent(mask, ntohs(x), ntohs(y), NULL);
+                                    } else if (msgType == RFB_CLIENT_KEY_EVENT) {
+                                        // KeyEvent: [type][down][padding][keysym]
+                                        uint8_t down;
+                                        uint32_t keysym;
+                                        recv(client_fd, &down, 1, 0);
+                                        uint8_t padding[2];
+                                        recv(client_fd, padding, 2, 0);
+                                        recv(client_fd, &keysym, 4, 0);
+                                        kbdAddEvent(down ? TRUE : FALSE, ntohl(keysym), NULL);
+                                    } else if (msgType == RFB_CLIENT_FRAMEBUFFER_UPDATE_REQUEST) {
+                                        // FBUpdateRequest: [type][incremental][x][y][w][h]
+                                        uint8_t incremental;
+                                        uint16_t x, y, w, h;
+                                        recv(client_fd, &incremental, 1, 0);
+                                        recv(client_fd, &x, 2, 0);
+                                        recv(client_fd, &y, 2, 0);
+                                        recv(client_fd, &w, 2, 0);
+                                        recv(client_fd, &h, 2, 0);
+                                        // 忽略，自动推送
+                                    } else if (msgType == RFB_CLIENT_SET_ENCODINGS) {
+                                        // SetEncodings: [type][padding][count][encodings]
+                                        uint8_t pad;
+                                        uint16_t count;
+                                        recv(client_fd, &pad, 1, 0);
+                                        recv(client_fd, &count, 2, 0);
+                                        for (int i = 0; i < ntohs(count); i++) {
+                                            uint32_t encoding;
+                                            recv(client_fd, &encoding, 4, 0);
                                         }
-                                    } else if (strncmp(buf, "SET_BITRATE ", 12) == 0) {
-                                        int bitrate = atoi(buf + 12);
-                                        if (bitrate > 0 && gH264Encoder) {
-                                            [gH264Encoder setBitrate:bitrate * 1024];
-                                        }
-                                    } else if (strncmp(buf, "SET_SCALE ", 10) == 0) {
-                                        float scale = atof(buf + 10);
-                                        if (scale > 0 && scale <= 1.0) {
-                                            gScale = scale;
-                                        }
-                                    } else if (strncmp(buf, "SET_KEYINT ", 11) == 0) {
-                                        int keyint = atoi(buf + 11);
-                                        if (keyint > 0 && gH264Encoder) {
-                                            [gH264Encoder setKeyFrameInterval:keyint];
-                                        }
-                                    } else if (strncmp(buf, "SET_PROFILE ", 12) == 0) {
-                                        if (strncmp(buf + 12, "baseline", 8) == 0) {
-                                            [gH264Encoder setProfile:0];
-                                        } else if (strncmp(buf + 12, "main", 4) == 0) {
-                                            [gH264Encoder setProfile:1];
-                                        } else if (strncmp(buf + 12, "high", 4) == 0) {
-                                            [gH264Encoder setProfile:2];
-                                        }
-                                    } else if (strncmp(buf, "GET_STATUS", 10) == 0) {
-                                        TVLog(@"状态: FPS=%d, Bitrate=%dKbps, KeyInt=%d, Profile=%d, Scale=%.2f",
-                                              [gH264Encoder getFps],
-                                              [gH264Encoder getBitrate] / 1024,
-                                              [gH264Encoder getKeyFrameInterval],
-                                              [gH264Encoder getProfile],
-                                              gScale);
+                                    } else if (msgType == RFB_CLIENT_SET_PIXEL_FORMAT) {
+                                        // 忽略，使用默认格式
+                                        uint8_t buffer[16];
+                                        recv(client_fd, buffer, 16, 0);
                                     }
-                                    // 控制命令（调用原本的 ptrAddEvent/kbdAddEvent）
-                                    else if (strncmp(buf, "PTR ", 4) == 0) {
-                                        int buttonMask, x, y;
-                                        if (sscanf(buf, "PTR %d %d %d", &buttonMask, &x, &y) == 3) {
-                                            ptrAddEvent(buttonMask, x, y, NULL);
-                                        }
-                                    } else if (strncmp(buf, "KEY ", 4) == 0) {
-                                        char action[16];
-                                        unsigned long keysym;
-                                        if (sscanf(buf, "KEY %15s %lu", action, &keysym) == 2) {
-                                            rfbBool down = (strcmp(action, "down") == 0) ? TRUE : FALSE;
-                                            kbdAddEvent(down, (rfbKeySym)keysym, NULL);
-                                        }
-                                    }
+                                    // 其他消息忽略
                                 }
                                 
                                 // ✅ 客户端断开，从列表移除
