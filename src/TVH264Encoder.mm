@@ -72,7 +72,8 @@
 - (void)setKeyFrameInterval:(int)interval {
     if (interval != _keyFrameInterval && interval > 0) {
         _keyFrameInterval = interval;
-        _frameCount = 0;
+        // 不要重置 _frameCount，否则会破坏 GOP 节奏
+        // _frameCount = 0;  // ← 删除这行
         [self rebuildSessionIfNeeded];
         TVLog(@"H264: KeyFrameInterval set to %d", _keyFrameInterval);
     }
@@ -252,8 +253,13 @@
         _currentHeight == height &&
         _currentRotation == rotation &&
         _currentScale == scale) {
+        TVLog(@"⏭️ 跳过重建 (frameCount=%d, keyint=%d)", _frameCount, _keyFrameInterval);
         return;
     }
+
+    TVLog(@"🔄 重建编码器: %dx%d rot=%d scale=%.3f (old: %dx%d rot=%d scale=%.3f)", 
+          width, height, rotation, scale,
+          _currentWidth, _currentHeight, _currentRotation, _currentScale);
 
     [self invalidate];
 
@@ -284,7 +290,8 @@
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CAVLC);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(keyint));
-    VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
+    // ❌ 删除下面这行 - 它强制每秒一个关键帧，会和 keyint 冲突
+    // VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitrate));
     VTSessionSetProperty(_compressionSession, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)@[@(bitrate / 8), @1.0]);
@@ -366,16 +373,18 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
         return;
     }
 
-    // 判断是否关键帧
+    // ✅ 修复：正确判断关键帧
     BOOL keyFrame = NO;
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
         CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
         CFBooleanRef notSync = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
-        keyFrame = !notSync || !CFBooleanGetValue(notSync);
+        // NotSync = NULL 或 FALSE → 关键帧 (I帧)
+        // NotSync = TRUE → 非关键帧 (P帧)
+        keyFrame = (notSync == NULL || !CFBooleanGetValue(notSync));
     }
     
-    // ✅ 合并所有 NAL 单元为一个数据包
+    // 合并所有 NAL 单元为一个数据包
     NSMutableData *combinedData = [NSMutableData data];
     const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
     int nalCount = 0;
@@ -455,7 +464,7 @@ static void tvH264CompressionOutputCallback(void *outputCallbackRefCon,
     
     free(dataPointer);
 
-    // ✅ 一次性发送所有数据
+    // 一次性发送所有数据
     if (combinedData.length > 0) {
         TVLog(@"📤 发送 H264: %lu 字节, NAL数=%d, keyFrame=%@", 
               (unsigned long)combinedData.length, nalCount, keyFrame ? @"YES" : @"NO");
