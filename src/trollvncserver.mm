@@ -5385,7 +5385,6 @@ int main(int argc, const char *argv[]) {
                             
 
                             
-                            // ✅ 启动屏幕捕获
                             // ✅ 重新初始化编码器（如果不存在）
                             if (!gH264Encoder) {
                                 gH264Encoder = [[TVH264Encoder alloc] init];
@@ -5414,6 +5413,12 @@ int main(int argc, const char *argv[]) {
                                     };
                                     TVLog(@"✅ 编码器重新初始化");
                                 }
+                            }
+                            
+                            // ✅ 无论编码器是否新建，都强制下一帧为关键帧
+                            if (gH264Encoder) {
+                                [gH264Encoder forceKeyFrame];
+                                TVLog(@"🔑 已强制下一帧为关键帧");
                             }
                             
                             // ✅ 启动屏幕捕获
