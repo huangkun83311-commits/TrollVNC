@@ -27,6 +27,9 @@ typedef void (^TVH264EncoderOutputBlock)(NSData *naluData, BOOL isKeyFrame);
 
 - (void)invalidate;
 
+// ✅ 强制下一帧为关键帧
+- (void)forceKeyFrame;
+
 @end
 
 NS_ASSUME_NONNULL_END
