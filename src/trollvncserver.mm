@@ -5041,8 +5041,8 @@ extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen) {
     *outData = (const uint8_t *)currentData.bytes;
     *outLen = currentData.length;
     
-    // 添加：打印前16字节
-    const uint8_t *bytes = currentData.bytes;
+    // 修改：添加强制类型转换
+    const uint8_t *bytes = (const uint8_t *)currentData.bytes;
     rfbLog("H264数据 %lu 字节, 前16字节: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
            (unsigned long)currentData.length,
            bytes[0], bytes[1], bytes[2], bytes[3], 
@@ -5053,6 +5053,7 @@ extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen) {
     pthread_mutex_unlock(&gH264DataMutex);
     return 1;
 }
+
 #ifdef THEBOOTSTRAP
 #define SINGLETON_PARENT_NAME "trollvncmanager"
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.server.pid"
@@ -5205,8 +5206,8 @@ int main(int argc, const char *argv[]) {
         [gH264Encoder setBitrate:2000 * 1024];
         [gH264Encoder setKeyFrameInterval:30];
         gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-            // 添加：打印前16字节
-            const uint8_t *bytes = naluData.bytes;
+            // 修改：添加强制类型转换
+            const uint8_t *bytes = (const uint8_t *)naluData.bytes;
             rfbLog("H264编码器输出: %lu 字节, %s, 前16字节: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
                    (unsigned long)naluData.length,
                    isKeyFrame ? "关键帧" : "非关键帧",
