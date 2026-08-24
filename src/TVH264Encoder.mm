@@ -97,10 +97,13 @@
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(_fps));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(_bitrate));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(_keyFrameInterval));
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, @(1));  // ← 添加
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
 
+    VTCompressionSessionPrepareToEncodeFrames(_session);  // ← 添加
+
     _frameCount = 0;
-    _needForceKeyFrame = YES; 
+    _needForceKeyFrame = YES;  // ← 添加
 }
 
 static void TVH264EncoderOutputCallback(
