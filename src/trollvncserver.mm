@@ -2282,15 +2282,14 @@ while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
 rfbReleaseClientIterator(h264Iter);
 
 if (hasH264Client && gH264Encoder) {
-    // 添加：打印使用 H.264
     rfbLog("*** 检测到 H.264 客户端，使用 H.264 编码 ***\n");
     CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (h264Pb) {
         [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
     }
-    rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+    // rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);  // ← 删除这一行！
     return;
-} else {
+}else {
     // 添加：打印不使用 H.264 的原因
     rfbLog("使用普通编码 (hasH264Client=%s, gH264Encoder=%s)\n",
            hasH264Client ? "YES" : "NO",
@@ -5221,6 +5220,9 @@ int main(int argc, const char *argv[]) {
             gLatestH264Data = [naluData copy];
             gLatestH264IsKeyFrame = isKeyFrame;
             pthread_mutex_unlock(&gH264DataMutex);
+            
+            // 数据准备好后，触发发送
+            rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);  // ← 添加这一行！
         };
 
         initializeTilingOrReset();
