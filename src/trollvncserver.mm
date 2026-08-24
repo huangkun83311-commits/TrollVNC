@@ -5205,6 +5205,7 @@ int main(int argc, const char *argv[]) {
         [gH264Encoder setFps:30];
         [gH264Encoder setBitrate:2000 * 1024];
         [gH264Encoder setKeyFrameInterval:30];
+        [gH264Encoder forceKeyFrame]; 
         gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
             // 修改：添加强制类型转换
             const uint8_t *bytes = (const uint8_t *)naluData.bytes;
