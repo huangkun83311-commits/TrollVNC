@@ -18,7 +18,7 @@
     if (self) {
         _fps = 30;
         _bitrate = 2000 * 1024;
-        _keyFrameInterval = 30;
+        _keyFrameInterval = 0;  // ← 改成 0！每帧都是关键帧
         _needForceKeyFrame = NO;
         _session = NULL;
     }
@@ -91,12 +91,13 @@
         _session = NULL;
         return;
     }
+
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(_fps));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(_bitrate));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(_keyFrameInterval));
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));  // ← 加 (__bridge CFTypeRef)
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
 
     VTCompressionSessionPrepareToEncodeFrames(_session);
@@ -190,18 +191,23 @@ static void TVH264EncoderOutputCallback(
         return;
     }
 
-    CFMutableDictionaryRef properties = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    if (_needForceKeyFrame) {
-        CFDictionaryAddValue(properties, kVTEncodeFrameOptionKey_ForceKeyFrame, kCFBooleanTrue);
-        _needForceKeyFrame = NO;
-    }
-
     CMTime pts = CMTimeMake(_frameCount++, _fps);
 
-    VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, properties, NULL, NULL);
-
-    if (properties) {
-        CFRelease(properties);
+    if (_needForceKeyFrame) {
+        _needForceKeyFrame = NO;
+        VTCompressionSessionEncodeFrame(
+            _session,
+            pixelBuffer,
+            pts,
+            kCMTimeInvalid,
+            (CFDictionaryRef)@{
+                (__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES
+            },
+            NULL,
+            NULL
+        );
+    } else {
+        VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, NULL, NULL, NULL);
     }
 }
 
