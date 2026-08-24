@@ -1,14 +1,16 @@
 #import "TVH264Encoder.h"
+#import <VideoToolbox/VideoToolbox.h>
 
 @interface TVH264Encoder ()
 @property (nonatomic, assign) VTCompressionSessionRef session;
 @property (nonatomic, assign) int fps;
 @property (nonatomic, assign) int bitrate;
 @property (nonatomic, assign) int keyFrameInterval;
-@property (nonatomic, assign) BOOL needForceKeyFrame;
 @property (nonatomic, assign) int currentWidth;
 @property (nonatomic, assign) int currentHeight;
 @property (nonatomic, assign) int64_t frameCount;
+@property (nonatomic, strong) NSData *spsData;
+@property (nonatomic, strong) NSData *ppsData;
 @end
 
 @implementation TVH264Encoder
@@ -19,35 +21,11 @@
         _fps = 30;
         _bitrate = 2000 * 1024;
         _keyFrameInterval = 30;
-        _needForceKeyFrame = NO;
         _session = NULL;
+        _spsData = nil;
+        _ppsData = nil;
     }
     return self;
-}
-
-- (void)setFps:(int)fps {
-    _fps = fps;
-    if (_session) {
-        VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps));
-    }
-}
-
-- (void)setBitrate:(int)bitrate {
-    _bitrate = bitrate;
-    if (_session) {
-        VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitrate));
-    }
-}
-
-- (void)setKeyFrameInterval:(int)interval {
-    _keyFrameInterval = interval;
-    if (_session) {
-        VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(interval));
-    }
-}
-
-- (void)forceKeyFrame {
-    _needForceKeyFrame = YES;
 }
 
 - (void)invalidate {
@@ -57,6 +35,8 @@
         CFRelease(_session);
         _session = NULL;
     }
+    _spsData = nil;
+    _ppsData = nil;
 }
 
 - (void)dealloc {
@@ -74,7 +54,7 @@
     _currentHeight = height;
 
     OSStatus status = VTCompressionSessionCreate(
-        NULL,
+        kCFAllocatorDefault,
         width,
         height,
         kCMVideoCodecType_H264,
@@ -100,10 +80,14 @@
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
 
-    VTCompressionSessionPrepareToEncodeFrames(_session);
+    status = VTCompressionSessionPrepareToEncodeFrames(_session);
+    if (status != noErr) {
+        NSLog(@"TVH264Encoder: PrepareToEncodeFrames failed: %d", (int)status);
+        [self invalidate];
+        return;
+    }
 
     _frameCount = 0;
-    _needForceKeyFrame = YES;
 }
 
 static void TVH264EncoderOutputCallback(
@@ -122,8 +106,30 @@ static void TVH264EncoderOutputCallback(
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
         CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
-        CFBooleanRef keyFrame = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
-        isKeyFrame = (keyFrame == kCFBooleanFalse);
+        CFBooleanRef notSync = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
+        isKeyFrame = !CFBooleanGetValue(notSync);
+    }
+
+    // 关键帧：提取 SPS/PPS
+    if (isKeyFrame) {
+        CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
+        if (formatDesc) {
+            size_t numParams = 0;
+            const uint8_t *spsPtr = NULL;
+            size_t spsLen = 0;
+            const uint8_t *ppsPtr = NULL;
+            size_t ppsLen = 0;
+
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 0, &spsPtr, &spsLen, &numParams, NULL);
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 1, &ppsPtr, &ppsLen, &numParams, NULL);
+
+            if (spsPtr && spsLen > 0) {
+                encoder.spsData = [NSData dataWithBytes:spsPtr length:spsLen];
+            }
+            if (ppsPtr && ppsLen > 0) {
+                encoder.ppsData = [NSData dataWithBytes:ppsPtr length:ppsLen];
+            }
+        }
     }
 
     CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
@@ -132,8 +138,20 @@ static void TVH264EncoderOutputCallback(
     }
 
     size_t totalLength = CMBlockBufferGetDataLength(blockBuffer);
-
     NSMutableData *naluData = [NSMutableData dataWithCapacity:totalLength];
+
+    // 关键帧：先添加 SPS/PPS
+    if (isKeyFrame) {
+        const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+        if (encoder.spsData) {
+            [naluData appendBytes:startCode length:4];
+            [naluData appendData:encoder.spsData];
+        }
+        if (encoder.ppsData) {
+            [naluData appendBytes:startCode length:4];
+            [naluData appendData:encoder.ppsData];
+        }
+    }
 
     size_t offset = 0;
     while (offset < totalLength) {
@@ -144,7 +162,6 @@ static void TVH264EncoderOutputCallback(
             break;
         }
 
-        // AVCC length-prefixed -> Annex-B start code
         size_t pos = 0;
         while (pos + 4 <= length) {
             uint32_t naluLength = 0;
@@ -191,10 +208,11 @@ static void TVH264EncoderOutputCallback(
         return;
     }
 
-    CMTime pts = CMTimeMake(_frameCount++, _fps);
+    CMTime pts = CMTimeMake(_frameCount, _fps);
+    _frameCount++;
 
-    if (_needForceKeyFrame) {
-        _needForceKeyFrame = NO;
+    // 第一帧强制关键帧
+    if (_frameCount == 1) {
         VTCompressionSessionEncodeFrame(
             _session,
             pixelBuffer,
