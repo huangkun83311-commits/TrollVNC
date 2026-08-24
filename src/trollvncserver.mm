@@ -5032,6 +5032,7 @@ static void cleanupAndExit(int code) {
 extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen) {
     pthread_mutex_lock(&gH264DataMutex);
     if (!gLatestH264Data || gLatestH264Data.length == 0) {
+        rfbLog("tvGetLatestH264Data: 无数据\n");
         pthread_mutex_unlock(&gH264DataMutex);
         return 0;
     }
@@ -5039,10 +5040,19 @@ extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen) {
     currentData = gLatestH264Data;
     *outData = (const uint8_t *)currentData.bytes;
     *outLen = currentData.length;
+    
+    // 添加：打印前16字节
+    const uint8_t *bytes = currentData.bytes;
+    rfbLog("H264数据 %lu 字节, 前16字节: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+           (unsigned long)currentData.length,
+           bytes[0], bytes[1], bytes[2], bytes[3], 
+           bytes[4], bytes[5], bytes[6], bytes[7],
+           bytes[8], bytes[9], bytes[10], bytes[11], 
+           bytes[12], bytes[13], bytes[14], bytes[15]);
+    
     pthread_mutex_unlock(&gH264DataMutex);
     return 1;
 }
-
 #ifdef THEBOOTSTRAP
 #define SINGLETON_PARENT_NAME "trollvncmanager"
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.server.pid"
@@ -5195,6 +5205,16 @@ int main(int argc, const char *argv[]) {
         [gH264Encoder setBitrate:2000 * 1024];
         [gH264Encoder setKeyFrameInterval:30];
         gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
+            // 添加：打印前16字节
+            const uint8_t *bytes = naluData.bytes;
+            rfbLog("H264编码器输出: %lu 字节, %s, 前16字节: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                   (unsigned long)naluData.length,
+                   isKeyFrame ? "关键帧" : "非关键帧",
+                   bytes[0], bytes[1], bytes[2], bytes[3], 
+                   bytes[4], bytes[5], bytes[6], bytes[7],
+                   bytes[8], bytes[9], bytes[10], bytes[11], 
+                   bytes[12], bytes[13], bytes[14], bytes[15]);
+            
             pthread_mutex_lock(&gH264DataMutex);
             gLatestH264Data = [naluData copy];
             gLatestH264IsKeyFrame = isKeyFrame;
