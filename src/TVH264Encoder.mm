@@ -100,6 +100,7 @@
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
 
     _frameCount = 0;
+    _needForceKeyFrame = YES; 
 }
 
 static void TVH264EncoderOutputCallback(
