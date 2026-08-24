@@ -51,6 +51,7 @@
 #import "PSAssistiveTouchSettingsDetail.h"
 #import "STHIDEventGenerator.h"
 #import "ScreenCapturer.h"
+#import "TVH264Encoder.h"
 
 #define LocalizedString(key, comment, bundle, table)                                                                   \
     (NSLocalizedStringFromTableInBundle((key), (table), (bundle), (comment)) ?: (key))
@@ -106,6 +107,10 @@ static BOOL gAutoAssistEnabled = NO;
 static BOOL gCursorEnabled = NO;
 static BOOL gKeyEventLogging = NO;
 static BOOL gOrientationSyncEnabled = YES;
+static TVH264Encoder *gH264Encoder = nil;
+static NSData *gLatestH264Data = nil;
+static BOOL gLatestH264IsKeyFrame = NO;
+static pthread_mutex_t gH264DataMutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
@@ -2257,6 +2262,27 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tStart = CFAbsoluteTimeGetCurrent();
 #endif
 
+    // H.264: check if any client supports H.264
+    rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
+    rfbClientPtr h264Cl = NULL;
+    BOOL hasH264Client = NO;
+    while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
+        if (h264Cl->enableH264) {
+            hasH264Client = YES;
+            break;
+        }
+    }
+    rfbReleaseClientIterator(h264Iter);
+
+    if (hasH264Client && gH264Encoder) {
+        CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (h264Pb) {
+            [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
+        }
+        rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+        return;
+    }
+
     CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!pb) {
         TVLogVerbose(@"sampleBuffer has no image buffer (skip)");
@@ -3514,7 +3540,6 @@ static int tvSetNonBlocking(int fd) {
         return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
-
 static void tvStopControlSocket(void) {
     if (gTvCtlAcceptSource) {
         dispatch_source_cancel(gTvCtlAcceptSource);
@@ -4990,6 +5015,20 @@ static void cleanupAndExit(int code) {
     exit(code);
 }
 
+extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen) {
+    pthread_mutex_lock(&gH264DataMutex);
+    if (!gLatestH264Data || gLatestH264Data.length == 0) {
+        pthread_mutex_unlock(&gH264DataMutex);
+        return 0;
+    }
+    static NSData *currentData = nil;
+    currentData = gLatestH264Data;
+    *outData = (const uint8_t *)currentData.bytes;
+    *outLen = currentData.length;
+    pthread_mutex_unlock(&gH264DataMutex);
+    return 1;
+}
+
 #ifdef THEBOOTSTRAP
 #define SINGLETON_PARENT_NAME "trollvncmanager"
 #define SINGLETON_MARKER_PATH "/var/mobile/Library/Caches/com.82flex.trollvnc.server.pid"
@@ -5137,6 +5176,16 @@ int main(int argc, const char *argv[]) {
         prepareBulletinManager();
         prepareClipboardManager();
         prepareScreenCapturer();
+        gH264Encoder = [[TVH264Encoder alloc] init];
+        [gH264Encoder setFps:30];
+        [gH264Encoder setBitrate:2000 * 1024];
+        [gH264Encoder setKeyFrameInterval:30];
+        gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
+            pthread_mutex_lock(&gH264DataMutex);
+            gLatestH264Data = [naluData copy];
+            gLatestH264IsKeyFrame = isKeyFrame;
+            pthread_mutex_unlock(&gH264DataMutex);
+        };
 
         initializeTilingOrReset();
         initializeAndRunRfbServer();
