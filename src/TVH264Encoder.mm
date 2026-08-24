@@ -117,8 +117,8 @@ static void TVH264EncoderOutputCallback(
     BOOL isKeyFrame = NO;
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
-        CFDictionaryRef dict = CFArrayGetValueAtIndex(attachments, 0);
-        CFBooleanRef keyFrame = CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
+        CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        CFBooleanRef keyFrame = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
         isKeyFrame = (keyFrame == kCFBooleanFalse);
     }
 
@@ -127,8 +127,7 @@ static void TVH264EncoderOutputCallback(
         return;
     }
 
-    size_t totalLength = 0;
-    CMBlockBufferGetDataLength(blockBuffer, &totalLength);
+    size_t totalLength = CMBlockBufferGetDataLength(blockBuffer);
 
     NSMutableData *naluData = [NSMutableData dataWithCapacity:totalLength];
 
