@@ -18,7 +18,7 @@
     if (self) {
         _fps = 30;
         _bitrate = 2000 * 1024;
-        _keyFrameInterval = 0;  // ← 改成 0！每帧都是关键帧
+        _keyFrameInterval = 30;
         _needForceKeyFrame = NO;
         _session = NULL;
     }
