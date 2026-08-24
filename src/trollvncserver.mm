@@ -2262,40 +2262,54 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tStart = CFAbsoluteTimeGetCurrent();
 #endif
 
-    // H.264: check if any client supports H.264
-    rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
-    rfbClientPtr h264Cl = NULL;
-    BOOL hasH264Client = NO;
-    while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
-        if (h264Cl->enableH264) {
-            hasH264Client = YES;
-            break;
-        }
+ // H.264: check if any client supports H.264
+rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
+rfbClientPtr h264Cl = NULL;
+BOOL hasH264Client = NO;
+while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
+    // 添加：打印每个客户端的编码信息
+    rfbLog("客户端 %s: 首选编码=0x%X (%d), enableH264=%s\n", 
+           h264Cl->host ? h264Cl->host : "未知",
+           h264Cl->preferredEncoding,
+           h264Cl->preferredEncoding,
+           h264Cl->enableH264 ? "YES" : "NO");
+    
+    if (h264Cl->enableH264) {
+        hasH264Client = YES;
+        break;
     }
-    rfbReleaseClientIterator(h264Iter);
+}
+rfbReleaseClientIterator(h264Iter);
 
-    if (hasH264Client && gH264Encoder) {
-        CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
-        if (h264Pb) {
-            [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
-        }
-        rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
-        return;
+if (hasH264Client && gH264Encoder) {
+    // 添加：打印使用 H.264
+    rfbLog("*** 检测到 H.264 客户端，使用 H.264 编码 ***\n");
+    CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (h264Pb) {
+        [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
     }
+    rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+    return;
+} else {
+    // 添加：打印不使用 H.264 的原因
+    rfbLog("使用普通编码 (hasH264Client=%s, gH264Encoder=%s)\n",
+           hasH264Client ? "YES" : "NO",
+           gH264Encoder ? "YES" : "NO");
+}
 
-    CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (!pb) {
-        TVLogVerbose(@"sampleBuffer has no image buffer (skip)");
-        return;
-    }
+CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sampleBuffer);
+if (!pb) {
+    TVLogVerbose(@"sampleBuffer has no image buffer (skip)");
+    return;
+}
 
-    // Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
-    if (gMaxInflightUpdates > 0 && gInflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates) {
-        // When busy dropping, skip all hashing/dirty work.
-        TVLogVerbose(@"drop frame due to inflight=%d >= limit=%d", gInflight.load(std::memory_order_relaxed),
-                     gMaxInflightUpdates);
-        return;
-    }
+// Busy-drop: if encoders are busy and limit reached, skip this frame (disabled when -Q 0)
+if (gMaxInflightUpdates > 0 && gInflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates) {
+    // When busy dropping, skip all hashing/dirty work.
+    TVLogVerbose(@"drop frame due to inflight=%d >= limit=%d", gInflight.load(std::memory_order_relaxed),
+                 gMaxInflightUpdates);
+    return;
+}
 
 #if DEBUG
     CFAbsoluteTime __tv_tLock0 = CFAbsoluteTimeGetCurrent();
