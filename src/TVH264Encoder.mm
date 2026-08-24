@@ -91,19 +91,18 @@
         _session = NULL;
         return;
     }
-
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(_fps));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(_bitrate));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(_keyFrameInterval));
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, @(1));  // ← 添加
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));  // ← 加 (__bridge CFTypeRef)
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
 
-    VTCompressionSessionPrepareToEncodeFrames(_session);  // ← 添加
+    VTCompressionSessionPrepareToEncodeFrames(_session);
 
     _frameCount = 0;
-    _needForceKeyFrame = YES;  // ← 添加
+    _needForceKeyFrame = YES;
 }
 
 static void TVH264EncoderOutputCallback(
