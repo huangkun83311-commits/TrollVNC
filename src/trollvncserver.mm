@@ -2278,12 +2278,19 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
 
     if (hasH264Client && gH264Encoder) {
-        // 没有关键帧时，每帧都强制关键帧，直到第一个关键帧到来
+        static int forceCounter = 0;
+        rfbLog("[SRV] handleFB: H264 path hit, gHasKeyFrame=%d, forceCounter=%d\n",
+               gHasKeyFrame, forceCounter);
         if (!gHasKeyFrame) {
-            [gH264Encoder forceKeyFrame];
+            forceCounter++;
+            if (forceCounter >= 30) {
+                rfbLog("[SRV] handleFB: calling forceKeyFrame\n");
+                [gH264Encoder forceKeyFrame];
+                forceCounter = 0;
+            }
         }
-        rfbLog("*** 检测到 H.264 客户端，使用 H.264 编码 ***\n");
         CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
+        rfbLog("[SRV] handleFB: pixelBuffer=%p, calling encodePixelBuffer\n", h264Pb);
         if (h264Pb) {
             [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
         }
@@ -5038,8 +5045,10 @@ static void cleanupAndExit(int code) {
 extern "C" int tvGetLatestH264Data( const uint8_t **outData, size_t *outLen)
 {
     pthread_mutex_lock(&gH264DataMutex);
-    // 没有关键帧时返回 0，等关键帧到来
+    rfbLog("[SRV] getH264: gHasKeyFrame=%d, gLatestH264Data=%p, len=%lu\n",
+           gHasKeyFrame, gLatestH264Data, gLatestH264Data ? (unsigned long)gLatestH264Data.length : 0);
     if (!gHasKeyFrame || !gLatestH264Data || gLatestH264Data.length == 0) {
+        rfbLog("[SRV] getH264: return 0 (no keyframe or empty data)\n");
         pthread_mutex_unlock(&gH264DataMutex);
         return 0;
     }
@@ -5049,13 +5058,14 @@ extern "C" int tvGetLatestH264Data( const uint8_t **outData, size_t *outLen)
     *outLen = currentData.length;
     if (currentData.length >= 5) {
         const uint8_t *bytes = (const uint8_t *)currentData.bytes;
-        rfbLog("发送H264帧 %lu 字节: %02X %02X %02X %02X %02X\n",
+        rfbLog("[SRV] getH264: return %lu bytes: %02X %02X %02X %02X %02X\n",
                (unsigned long)currentData.length,
                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
     }
     pthread_mutex_unlock(&gH264DataMutex);
     return 1;
 }
+
 
 
 
@@ -5229,6 +5239,7 @@ int main(int argc, const char *argv[]) {
             if (isKeyFrame) {
                 gLastKeyFrameData = [naluData copy];
                 gHasKeyFrame = YES;
+                rfbLog("[SRV] outputBlock: KEYFRAME received, gHasKeyFrame=YES\n");
             }
             pthread_mutex_unlock(&gH264DataMutex);
         
