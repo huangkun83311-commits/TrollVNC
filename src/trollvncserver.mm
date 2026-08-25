@@ -2055,20 +2055,24 @@ static size_t gRotateScratchSize = 0;     // bytes
 static void *gScaleTemp = NULL;           // vImage scale temp buffer
 static size_t gScaleTempSize = 0;         // bytes
 
-// Align width up to a multiple of 4 (helps encoders/clients). Preserve aspect by adjusting height.
+// Align both dimensions up to a multiple of 16. H.264 encodes in 16x16
+// macroblocks, so VideoToolbox otherwise pads the *coded* size up to 16 while
+// leaving the visible size unchanged; noVNC then configures its WebCodecs
+// decoder with the visible size as codedWidth/codedHeight, and the mismatch
+// scrambles the decoded frame. Aligning to 16 keeps coded == visible.
 NS_INLINE void alignDimensions(int rawW, int rawH, int *alignedW, int *alignedH) {
     if (rawW <= 0)
         rawW = 1;
     if (rawH <= 0)
         rawH = 1;
-    // Round width up to next multiple of 4
-    int w4 = (rawW + 3) & ~3;
-    long long numer = (long long)rawH * (long long)w4;
-    int hAdj = (int)((numer + rawW / 2) / rawW); // rounded to nearest
-    if (hAdj <= 0)
-        hAdj = 1;
-    *alignedW = w4;
-    *alignedH = hAdj;
+    int w16 = (rawW + 15) & ~15;
+    int h16 = (rawH + 15) & ~15;
+    if (w16 <= 0)
+        w16 = 16;
+    if (h16 <= 0)
+        h16 = 16;
+    *alignedW = w16;
+    *alignedH = h16;
 }
 
 // Resize framebuffer according to rotation (0/180 keep WxH from src, 90/270 swap), then apply scale

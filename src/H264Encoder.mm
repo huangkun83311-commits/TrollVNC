@@ -111,6 +111,12 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
 
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(30));
 
+    // Emit BT.709 (sRGB) color space info in the SPS so browser decoders apply
+    // the correct YUV->RGB conversion instead of guessing BT.601.
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;
     int bitRate = pixels >= 2'000'000 ? 6'000'000 : (pixels >= 1'000'000 ? 4'000'000 : 2'500'000);
