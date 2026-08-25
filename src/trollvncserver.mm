@@ -2278,14 +2278,18 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 
 
     if (hasH264Client && gH264Encoder) {
+        // 没有关键帧时，每帧都强制关键帧，直到第一个关键帧到来
+        if (!gHasKeyFrame) {
+            [gH264Encoder forceKeyFrame];
+        }
+        rfbLog("*** 检测到 H.264 客户端，使用 H.264 编码 ***\n");
         CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (h264Pb) {
-            [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:gScale];
+            [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
         }
-        if (!hasNonH264Client) {
-            return;
-        }
+        return;
     }
+
 
     // ===== 以下普通编码路径保持原样，不要改 =====
 
@@ -5031,25 +5035,28 @@ static void cleanupAndExit(int code) {
     exit(code);
 }
 
-extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen, uint32_t *outFlags)
+extern "C" int tvGetLatestH264Data( const uint8_t **outData, size_t *outLen)
 {
     pthread_mutex_lock(&gH264DataMutex);
+    // 没有关键帧时返回 0，等关键帧到来
     if (!gHasKeyFrame || !gLatestH264Data || gLatestH264Data.length == 0) {
         pthread_mutex_unlock(&gH264DataMutex);
-        rfbLog("[TrollVNC] tvGetLatestH264Data 返回0\n");
         return 0;
     }
-    static NSData *s_currentFrame = nil;
-    s_currentFrame = [gLatestH264Data copy];
-    BOOL isKey = gLatestH264IsKeyFrame;
-    size_t len = s_currentFrame.length;
+    static NSData *currentData = nil;
+    currentData = [gLatestH264Data copy];
+    *outData = (const uint8_t *)currentData.bytes;
+    *outLen = currentData.length;
+    if (currentData.length >= 5) {
+        const uint8_t *bytes = (const uint8_t *)currentData.bytes;
+        rfbLog("发送H264帧 %lu 字节: %02X %02X %02X %02X %02X\n",
+               (unsigned long)currentData.length,
+               bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
+    }
     pthread_mutex_unlock(&gH264DataMutex);
-    *outData = (const uint8_t *)s_currentFrame.bytes;
-    *outLen = len;
-    *outFlags = isKey ? 1u : 0u;
-    rfbLog("[TrollVNC] tvGetLatestH264Data 发送 %zu 字节\n", len);
     return 1;
 }
+
 
 
 
