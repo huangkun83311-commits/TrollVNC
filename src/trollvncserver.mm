@@ -2260,40 +2260,31 @@ NS_INLINE void unlockAllClientsBlocking(void) {
 
 static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
 #if DEBUG
-    // Perf: overall start timestamp
     CFAbsoluteTime __tv_tStart = CFAbsoluteTimeGetCurrent();
 #endif
 
-    // H.264 帧就绪 → 触发 VNC 帧更新（在 ReplayKit 回调线程，安全）
-    if (gH264FrameReady.load()) {
-        gH264FrameReady.store(0);
-        rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
-    }
-
-    // H.264: check if any client supports H.264
-    rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
-    rfbClientPtr h264Cl = NULL;
     BOOL hasH264Client = NO;
     BOOL hasNonH264Client = NO;
-    while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
-        if (h264Cl->enableH264) {
+    for (rfbClientPtr cl = gScreen->clientHead; cl; cl = cl->next) {
+        if (cl->preferredEncoding == rfbEncodingH264) {
             hasH264Client = YES;
         } else {
             hasNonH264Client = YES;
         }
     }
-    rfbReleaseClientIterator(h264Iter);
 
     if (hasH264Client && gH264Encoder) {
         CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
         if (h264Pb) {
             [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:gScale];
         }
-
         if (!hasNonH264Client) {
             return;
         }
     }
+
+    // ===== 以下普通编码路径保持原样，不要改 =====
+
 
 #if DEBUG
 else {
@@ -5039,24 +5030,20 @@ static void cleanupAndExit(int code) {
 extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen, uint32_t *outFlags)
 {
     pthread_mutex_lock(&gH264DataMutex);
-
     if (!gHasKeyFrame || !gLatestH264Data || gLatestH264Data.length == 0) {
         pthread_mutex_unlock(&gH264DataMutex);
         return 0;
     }
-
     static NSData *s_currentFrame = nil;
     s_currentFrame = [gLatestH264Data copy];
     BOOL isKey = gLatestH264IsKeyFrame;
-
     pthread_mutex_unlock(&gH264DataMutex);
-
     *outData = (const uint8_t *)s_currentFrame.bytes;
     *outLen = s_currentFrame.length;
     *outFlags = isKey ? 1u : 0u;
-
     return 1;
 }
+
 
 
 #ifdef THEBOOTSTRAP
