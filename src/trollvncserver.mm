@@ -36,7 +36,10 @@
 #import <pthread.h>
 #import <rfb/keysym.h>
 #import <rfb/rfb.h>
+// rfbregion.h has no extern "C" guards, so wrap it for C++ linkage.
+extern "C" {
 #import <rfb/rfbregion.h>
+}
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
@@ -1585,8 +1588,7 @@ static void *gBackBuffer = NULL;  // We render into this and then swap
 // NOT the TurboVNC/QEMU "VA H.264" number (0x48323634) that rfbproto.h calls
 // rfbEncodingH264; that one uses a different framing and is not what noVNC parses.
 static const int kTvEncodingOpenH264 = 50;
-static const uint32_t kTvH264FlagResetContext = 1;     // bit 0
-static const uint32_t kTvH264FlagResetAllContexts = 2; // bit 1
+static const uint32_t kTvH264FlagResetContext = 1; // bit 0
 
 static TVH264Encoder *gH264Encoder = nil;
 static CVPixelBufferPoolRef gH264PixelBufferPool = NULL;
