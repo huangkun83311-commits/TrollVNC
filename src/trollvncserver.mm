@@ -2266,12 +2266,17 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     BOOL hasH264Client = NO;
     BOOL hasNonH264Client = NO;
     for (rfbClientPtr cl = gScreen->clientHead; cl; cl = cl->next) {
+        rfbLog("[TrollVNC] 客户端编码: 0x%08X (H264=0x%08X)\n",
+               (unsigned int)cl->preferredEncoding,
+               (unsigned int)rfbEncodingH264);
         if (cl->preferredEncoding == rfbEncodingH264) {
             hasH264Client = YES;
         } else {
             hasNonH264Client = YES;
         }
     }
+
+
 
     if (hasH264Client && gH264Encoder) {
         CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
@@ -5032,17 +5037,21 @@ extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen, uint
     pthread_mutex_lock(&gH264DataMutex);
     if (!gHasKeyFrame || !gLatestH264Data || gLatestH264Data.length == 0) {
         pthread_mutex_unlock(&gH264DataMutex);
+        rfbLog("[TrollVNC] tvGetLatestH264Data 返回0\n");
         return 0;
     }
     static NSData *s_currentFrame = nil;
     s_currentFrame = [gLatestH264Data copy];
     BOOL isKey = gLatestH264IsKeyFrame;
+    size_t len = s_currentFrame.length;
     pthread_mutex_unlock(&gH264DataMutex);
     *outData = (const uint8_t *)s_currentFrame.bytes;
-    *outLen = s_currentFrame.length;
+    *outLen = len;
     *outFlags = isKey ? 1u : 0u;
+    rfbLog("[TrollVNC] tvGetLatestH264Data 发送 %zu 字节\n", len);
     return 1;
 }
+
 
 
 
