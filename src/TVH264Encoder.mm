@@ -110,12 +110,14 @@ static void TVH264EncoderOutputCallback(
         return;
     }
 
-    BOOL isKeyFrame = NO;
+    BOOL isKeyFrame = YES;
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
         CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
-        CFBooleanRef keyFrame = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
-        isKeyFrame = (keyFrame == kCFBooleanFalse);
+        CFBooleanRef notSync = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
+        if (notSync == kCFBooleanTrue) {
+            isKeyFrame = NO;
+        }
     }
 
     CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
