@@ -230,7 +230,7 @@ static void TVH264EncoderOutputCallback(
 
     // 第一帧或强制关键帧
     if (_frameCount == 1 || _needForceKeyFrame) {
-        CFDictionaryRef properties = (CFDictionaryRef)@{
+        CFDictionaryRef properties = (__bridge CFDictionaryRef)@{
             (__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES
         };
         VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, properties, NULL, NULL);
