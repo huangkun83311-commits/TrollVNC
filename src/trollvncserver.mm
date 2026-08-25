@@ -5207,19 +5207,21 @@ int main(int argc, const char *argv[]) {
         
             const uint8_t *bytes = (const uint8_t *)naluData.bytes;
         
-            rfbLog(
-                #if DEBUG
-                  "H264编码器输出: %lu 字节, %s, 前16字节: "
-                  "%02X %02X %02X %02X %02X %02X %02X %02X "
-                  "%02X %02X %02X %02X %02X %02X %02X %02X\n",
-                  (unsigned long)naluData.length,
-                  isKeyFrame ? "关键帧" : "非关键帧",
-                #endif
-                bytes[0], bytes[1], bytes[2], bytes[3],
-                bytes[4], bytes[5], bytes[6], bytes[7],
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15]
-            );
+            #if DEBUG
+                        const uint8_t *bytes = (const uint8_t *)naluData.bytes;
+                        rfbLog(
+                            "H264编码器输出: %lu 字节, %s, 前16字节: "
+                            "%02X %02X %02X %02X %02X %02X %02X %02X "
+                            "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                            (unsigned long)naluData.length,
+                            isKeyFrame ? "关键帧" : "非关键帧",
+                            bytes[0], bytes[1], bytes[2], bytes[3],
+                            bytes[4], bytes[5], bytes[6], bytes[7],
+                            bytes[8], bytes[9], bytes[10], bytes[11],
+                            bytes[12], bytes[13], bytes[14], bytes[15]
+                        );
+            #endif
+
         
         
             pthread_mutex_lock(&gH264DataMutex);
