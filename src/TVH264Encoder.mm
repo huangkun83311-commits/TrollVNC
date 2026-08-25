@@ -228,16 +228,18 @@ static void TVH264EncoderOutputCallback(
     CMTime pts = CMTimeMake(_frameCount, _fps);
     _frameCount++;
 
-    // 第一帧或强制关键帧
     if (_frameCount == 1 || _needForceKeyFrame) {
-        CFDictionaryRef properties = (__bridge CFDictionaryRef)@{
-            (__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES
-        };
+        CFTypeRef keys[1] = { kVTEncodeFrameOptionKey_ForceKeyFrame };
+        CFTypeRef values[1] = { kCFBooleanTrue };
+        CFDictionaryRef properties = CFDictionaryCreate(NULL, keys, values, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
         VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, properties, NULL, NULL);
+        CFRelease(properties);
         _needForceKeyFrame = NO;
     } else {
         VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, NULL, NULL, NULL);
     }
+
 }
 
 @end
