@@ -1,14 +1,17 @@
 #import "TVH264Encoder.h"
+#import <VideoToolbox/VideoToolbox.h>
 
 @interface TVH264Encoder ()
 @property (nonatomic, assign) VTCompressionSessionRef session;
 @property (nonatomic, assign) int fps;
 @property (nonatomic, assign) int bitrate;
 @property (nonatomic, assign) int keyFrameInterval;
-@property (nonatomic, assign) BOOL needForceKeyFrame;
 @property (nonatomic, assign) int currentWidth;
 @property (nonatomic, assign) int currentHeight;
 @property (nonatomic, assign) int64_t frameCount;
+@property (nonatomic, assign) BOOL needForceKeyFrame;
+@property (nonatomic, strong) NSData *spsData;
+@property (nonatomic, strong) NSData *ppsData;
 @end
 
 @implementation TVH264Encoder
@@ -19,8 +22,10 @@
         _fps = 30;
         _bitrate = 2000 * 1024;
         _keyFrameInterval = 30;
-        _needForceKeyFrame = NO;
         _session = NULL;
+        _needForceKeyFrame = NO;
+        _spsData = nil;
+        _ppsData = nil;
     }
     return self;
 }
@@ -57,6 +62,8 @@
         CFRelease(_session);
         _session = NULL;
     }
+    _spsData = nil;
+    _ppsData = nil;
 }
 
 - (void)dealloc {
@@ -70,8 +77,9 @@
     [self invalidate];
     _currentWidth = width;
     _currentHeight = height;
+
     OSStatus status = VTCompressionSessionCreate(
-        NULL,
+        kCFAllocatorDefault,
         width,
         height,
         kCMVideoCodecType_H264,
@@ -83,18 +91,27 @@
         &_session
     );
     if (status != noErr) {
-        NSLog(@"[TrollVNC] VTCompressionSessionCreate failed: %d", (int)status);
+        NSLog(@"TVH264Encoder: VTCompressionSessionCreate failed: %d", (int)status);
         _session = NULL;
         return;
     }
+
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(_fps));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(_bitrate));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(_keyFrameInterval));
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
+    // 改为 Baseline，兼容 noVNC Broadway 解码器
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Baseline_AutoLevel);
+
+    status = VTCompressionSessionPrepareToEncodeFrames(_session);
+    if (status != noErr) {
+        NSLog(@"TVH264Encoder: PrepareToEncodeFrames failed: %d", (int)status);
+        [self invalidate];
+        return;
+    }
     _frameCount = 0;
-    NSLog(@"[TrollVNC] VTCompressionSession 创建成功: %dx%d", width, height);
 }
 
 static void TVH264EncoderOutputCallback(
@@ -106,54 +123,60 @@ static void TVH264EncoderOutputCallback(
 {
     TVH264Encoder *encoder = (__bridge TVH264Encoder *)outputCallbackRefCon;
     if (status != noErr || !sampleBuffer) {
-        NSLog(@"[TrollVNC] 编码回调: status=%d sampleBuffer=%p", (int)status, sampleBuffer);
         return;
     }
 
+    // 关键帧判断：默认 YES，只有明确 NotSync=true 时才是 NO
     BOOL isKeyFrame = YES;
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
     if (attachments && CFArrayGetCount(attachments) > 0) {
         CFDictionaryRef dict = (CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
         CFBooleanRef notSync = (CFBooleanRef)CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync);
-        if (notSync == kCFBooleanTrue) {
+        if (notSync && CFBooleanGetValue(notSync)) {
             isKeyFrame = NO;
+        }
+    }
+
+    // 关键帧：提取 SPS/PPS
+    if (isKeyFrame) {
+        CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
+        if (formatDesc) {
+            size_t numParams = 0;
+            const uint8_t *spsPtr = NULL;
+            size_t spsLen = 0;
+            const uint8_t *ppsPtr = NULL;
+            size_t ppsLen = 0;
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 0, &spsPtr, &spsLen, &numParams, NULL);
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(formatDesc, 1, &ppsPtr, &ppsLen, &numParams, NULL);
+            if (spsPtr && spsLen > 0) {
+                encoder.spsData = [NSData dataWithBytes:spsPtr length:spsLen];
+            }
+            if (ppsPtr && ppsLen > 0) {
+                encoder.ppsData = [NSData dataWithBytes:ppsPtr length:ppsLen];
+            }
         }
     }
 
     CMBlockBufferRef blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
     if (!blockBuffer) {
-        NSLog(@"[TrollVNC] 编码回调: blockBuffer 为空");
         return;
     }
-
     size_t totalLength = CMBlockBufferGetDataLength(blockBuffer);
-    NSMutableData *naluData = [NSMutableData dataWithCapacity:totalLength + 64];
+    NSMutableData *naluData = [NSMutableData dataWithCapacity:totalLength];
 
-    // 关键帧：先附加 SPS + PPS
+    // 关键帧：先添加 SPS/PPS
     if (isKeyFrame) {
-        CMFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
-        if (formatDesc) {
-            size_t spsSize = 0, ppsSize = 0;
-            const uint8_t *sps = NULL, *pps = NULL;
-            OSStatus spsStatus = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                formatDesc, 0, &sps, &spsSize, NULL, NULL);
-            OSStatus ppsStatus = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                formatDesc, 1, &pps, &ppsSize, NULL, NULL);
-
-            if (spsStatus == noErr && ppsStatus == noErr && spsSize > 0 && ppsSize > 0) {
-                const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
-                [naluData appendBytes:startCode length:4];
-                [naluData appendBytes:sps length:spsSize];
-                [naluData appendBytes:startCode length:4];
-                [naluData appendBytes:pps length:ppsSize];
-                NSLog(@"[TrollVNC] 关键帧: 已附加 SPS(%zu) + PPS(%zu)", spsSize, ppsSize);
-            } else {
-                NSLog(@"[TrollVNC] 关键帧: 获取 SPS/PPS 失败 sps=%d pps=%d", (int)spsStatus, (int)ppsStatus);
-            }
+        const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+        if (encoder.spsData) {
+            [naluData appendBytes:startCode length:4];
+            [naluData appendData:encoder.spsData];
+        }
+        if (encoder.ppsData) {
+            [naluData appendBytes:startCode length:4];
+            [naluData appendData:encoder.ppsData];
         }
     }
 
-    // AVCC length-prefixed -> Annex-B start code
     size_t offset = 0;
     while (offset < totalLength) {
         size_t length = 0;
@@ -180,11 +203,7 @@ static void TVH264EncoderOutputCallback(
     }
 
     if (naluData.length > 0 && encoder.outputBlock) {
-        NSLog(@"[TrollVNC] 编码输出: %lu 字节, %@", (unsigned long)naluData.length, isKeyFrame ? @"关键帧" : @"非关键帧");
         encoder.outputBlock(naluData, isKeyFrame);
-    } else {
-        NSLog(@"[TrollVNC] 编码输出: naluData.length=%lu outputBlock=%p",
-              (unsigned long)naluData.length, encoder.outputBlock);
     }
 }
 
@@ -200,19 +219,24 @@ static void TVH264EncoderOutputCallback(
     }
     width = (int)(width * scale);
     height = (int)(height * scale);
+
     [self setupSessionIfNeeded:width height:height];
     if (!_session) {
         return;
     }
-    CFMutableDictionaryRef properties = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    if (_needForceKeyFrame) {
-        CFDictionaryAddValue(properties, kVTEncodeFrameOptionKey_ForceKeyFrame, kCFBooleanTrue);
+
+    CMTime pts = CMTimeMake(_frameCount, _fps);
+    _frameCount++;
+
+    // 第一帧或强制关键帧
+    if (_frameCount == 1 || _needForceKeyFrame) {
+        CFDictionaryRef properties = (CFDictionaryRef)@{
+            (__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES
+        };
+        VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, properties, NULL, NULL);
         _needForceKeyFrame = NO;
-    }
-    CMTime pts = CMTimeMake(_frameCount++, _fps);
-    VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, properties, NULL, NULL);
-    if (properties) {
-        CFRelease(properties);
+    } else {
+        VTCompressionSessionEncodeFrame(_session, pixelBuffer, pts, kCMTimeInvalid, NULL, NULL, NULL);
     }
 }
 
