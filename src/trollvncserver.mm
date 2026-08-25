@@ -110,6 +110,8 @@ static BOOL gOrientationSyncEnabled = YES;
 static TVH264Encoder *gH264Encoder = nil;
 static NSData *gLatestH264Data = nil;
 static BOOL gLatestH264IsKeyFrame = NO;
+static NSData *gLastKeyFrameData = nil;
+static BOOL gHasKeyFrame = NO;
 static pthread_mutex_t gH264DataMutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Classic VNC authentication
@@ -5054,7 +5056,7 @@ extern "C" int tvGetLatestH264Data(
 
     if (currentData.length >= 5) {
 
-        const uint8_t *bytes = currentData.bytes;
+        const uint8_t *bytes = (const uint8_t *)currentData.bytes;
 
         rfbLog(
             "发送H264关键帧 %lu 字节: %02X %02X %02X %02X %02X\n",
