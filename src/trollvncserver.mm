@@ -2266,15 +2266,14 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     BOOL hasH264Client = NO;
     BOOL hasNonH264Client = NO;
     for (rfbClientPtr cl = gScreen->clientHead; cl; cl = cl->next) {
-        rfbLog("[TrollVNC] 客户端编码: 0x%08X (H264=0x%08X)\n",
-               (unsigned int)cl->preferredEncoding,
-               (unsigned int)rfbEncodingH264);
-        if (cl->preferredEncoding == rfbEncodingH264) {
+        rfbLog("[TrollVNC] 客户端编码: 0x%08X\n", (unsigned int)cl->preferredEncoding);
+        if (cl->preferredEncoding == 0x00000032) {  // ← 改成 0x32
             hasH264Client = YES;
         } else {
             hasNonH264Client = YES;
         }
     }
+
 
 
 
