@@ -2,6 +2,7 @@
 #import <VideoToolbox/VideoToolbox.h>
 
 @interface TVH264Encoder ()
+
 @property (nonatomic, assign) VTCompressionSessionRef session;
 @property (nonatomic, assign) int fps;
 @property (nonatomic, assign) int bitrate;
@@ -11,9 +12,42 @@
 @property (nonatomic, assign) int64_t frameCount;
 @property (nonatomic, strong) NSData *spsData;
 @property (nonatomic, strong) NSData *ppsData;
+@property (nonatomic, assign) BOOL needsKeyFrame;
 @end
 
 @implementation TVH264Encoder
+
+@synthesize fps = _fps;
+@synthesize bitrate = _bitrate;
+@synthesize keyFrameInterval = _keyFrameInterval;
+
+- (void)setFps:(int)fps {
+    _fps = fps;
+    if (_session) {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(fps));
+    }
+}
+
+- (void)setBitrate:(int)bps {
+    _bitrate = bps;
+    if (_session) {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bps));
+        NSArray *limits = @[@(bps * 2), @(1.0)];
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFTypeRef)limits);
+    }
+}
+
+- (void)setKeyFrameInterval:(int)frames {
+    _keyFrameInterval = frames;
+    if (_session) {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(frames));
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(2.0));
+    }
+}
+
+- (void)forceKeyFrame {
+    _needsKeyFrame = YES;
+}
 
 - (instancetype)init {
     self = [super init];
@@ -22,8 +56,7 @@
         _bitrate = 2000 * 1024;
         _keyFrameInterval = 30;
         _session = NULL;
-        _spsData = nil;
-        _ppsData = nil;
+        _needsKeyFrame = NO;
     }
     return self;
 }
@@ -35,9 +68,8 @@
         CFRelease(_session);
         _session = NULL;
     }
-    _spsData = nil;
-    _ppsData = nil;
 }
+
 
 - (void)dealloc {
     [self invalidate];
@@ -78,7 +110,7 @@
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(_bitrate));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(_keyFrameInterval));
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, (__bridge CFTypeRef)@(1));
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+    status = VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Baseline_AutoLevel);
 
     status = VTCompressionSessionPrepareToEncodeFrames(_session);
     if (status != noErr) {
@@ -211,8 +243,9 @@ static void TVH264EncoderOutputCallback(
     CMTime pts = CMTimeMake(_frameCount, _fps);
     _frameCount++;
 
-    // 第一帧强制关键帧
-    if (_frameCount == 1) {
+    BOOL forceKey = (_frameCount == 1) || _needsKeyFrame;
+    if (forceKey) {
+        _needsKeyFrame = NO;
         VTCompressionSessionEncodeFrame(
             _session,
             pixelBuffer,
