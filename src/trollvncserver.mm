@@ -1615,6 +1615,7 @@ static void tvMarkFullScreenModifiedExcludingH264(void);
 static void tvH264EncodeAndSendIfNeeded(void);
 static void tvH264InvalidateEncoder(void);
 static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe);
+static void tvH264MarkAllClientsNeedReset(void);
 
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
 NS_INLINE uint64_t crc32_update(uint64_t h, const uint8_t *data, size_t len) {
@@ -2145,6 +2146,9 @@ NS_INLINE void maybeResizeFramebufferForRotation(int rotQ) {
     // the next captured frame and force a keyframe for the new geometry.
     tvH264InvalidateEncoder();
     gH264ForceKeyframe.store(true, std::memory_order_relaxed);
+
+    // New geometry -> new SPS/PPS, so every H.264 client must rebuild its decoder.
+    tvH264MarkAllClientsNeedReset();
 
     TVLog(@"Resize: framebuffer changed to %dx%d (rotQ=%d, scale=%.3f)", gWidth, gHeight, rotQ, gScale);
 }
@@ -3164,6 +3168,7 @@ typedef struct {
     BOOL wheelFlushScheduled;          // whether a flush is pending for this client
     BOOL isRepeaterClient;             // whether this client is a repeater
     BOOL wantsH264;                    // client advertised the Open H.264 encoding (50)
+    BOOL h264NeedsReset;               // send ResetContext flag on the next H.264 frame
     char clientId8[CLIENT_ID_LEN + 1]; // cached 8-char client id (NUL-terminated)
 } TVClientState;
 
@@ -3185,6 +3190,7 @@ static rfbBool tvH264EnablePseudoEncoding(rfbClientPtr cl, void **data, int enco
     TVClientState *st = tvGetClientState(cl);
     if (st && !st->wantsH264) {
         st->wantsH264 = YES;
+        st->h264NeedsReset = YES; // first frame must carry ResetContext
         // Force an IDR so a freshly joined client can decode right away.
         gH264ForceKeyframe.store(true, std::memory_order_relaxed);
         TVLog(@"Client enabled H.264 (Open H.264) encoding");
@@ -3222,6 +3228,19 @@ static BOOL tvHasH264Clients(void) {
     }
     rfbReleaseClientIterator(it);
     return found;
+}
+
+static void tvH264MarkAllClientsNeedReset(void) {
+    if (!gScreen)
+        return;
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    while ((cl = rfbClientIteratorNext(it))) {
+        TVClientState *st = tvGetClientState(cl);
+        if (st && st->wantsH264)
+            st->h264NeedsReset = YES;
+    }
+    rfbReleaseClientIterator(it);
 }
 
 // Mark a rectangle modified for every client EXCEPT those on the H.264 path
@@ -3354,7 +3373,11 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
     if (!haveRequest)
         return; // nothing pending; the client will ask again
 
-    uint32_t flags = isKeyframe ? kTvH264FlagResetContext : 0;
+    // Only the first frame (or a frame after a resize) needs ResetContext so
+    // noVNC rebuilds its decoder; steady-state frames reuse the context.
+    uint32_t flags = (st->h264NeedsReset && isKeyframe) ? kTvH264FlagResetContext : 0;
+    if (flags & kTvH264FlagResetContext)
+        st->h264NeedsReset = NO;
 
     uint8_t header[24];
     header[0] = rfbFramebufferUpdate;
@@ -3436,9 +3459,13 @@ static void tvH264EncodeAndSendIfNeeded(void) {
     }
     CVPixelBufferUnlockBaseAddress(h264PB, 0);
 
-    BOOL forceKeyframe = gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
+    // Always encode an IDR. Frames are delivered asynchronously and a client
+    // may drop some of them (one-update-per-request); IDR-only framing means a
+    // dropped frame never breaks a P-frame reference chain, so every frame a
+    // client receives is independently decodable.
+    gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
     gH264Inflight.fetch_add(1, std::memory_order_relaxed);
-    [gH264Encoder encodePixelBuffer:h264PB forceKeyframe:forceKeyframe];
+    [gH264Encoder encodePixelBuffer:h264PB forceKeyframe:YES];
 
     CVPixelBufferRelease(h264PB);
 }
