@@ -36,6 +36,7 @@
 #import <pthread.h>
 #import <rfb/keysym.h>
 #import <rfb/rfb.h>
+#import <rfb/rfbregion.h>
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
@@ -3297,7 +3298,7 @@ static BOOL tvH264EnsureEncoder(void) {
         (id)kCVPixelBufferHeightKey : @(gHeight),
         (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
     };
-    CVReturn cv = CVPixelBufferPoolCreate(kCFAllocatorDefault, (__bridge CFDictionaryRef)attrs, &gH264PixelBufferPool);
+    CVReturn cv = CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, (__bridge CFDictionaryRef)attrs, &gH264PixelBufferPool);
     if (cv != kCVReturnSuccess || !gH264PixelBufferPool) {
         TVLog(@"H264: failed to create pixel buffer pool (%d)", (int)cv);
         [gH264Encoder invalidate];

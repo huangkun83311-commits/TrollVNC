@@ -75,10 +75,6 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     _queue = dispatch_queue_create("com.82flex.trollvnc.h264.encode", DISPATCH_QUEUE_SERIAL);
     _deliverQueue = dispatch_queue_create("com.82flex.trollvnc.h264.deliver", DISPATCH_QUEUE_SERIAL);
 
-    VTCompressionOutputCallbackRecord callbackRecord = {0};
-    callbackRecord.outputCallback = tv_h264_output_callback;
-    callbackRecord.outputCallbackRefCon = (__bridge void *)self;
-
     OSStatus status = VTCompressionSessionCreate(kCFAllocatorDefault,
                                                  (int32_t)width,
                                                  (int32_t)height,
@@ -86,7 +82,8 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
                                                  NULL, // let the system pick HW/SW encoder
                                                  NULL, // accept BGRA pixel buffers we provide
                                                  kCFAllocatorDefault,
-                                                 &callbackRecord,
+                                                 tv_h264_output_callback,
+                                                 (__bridge void *)self,
                                                  &_session);
     if (status != noErr || !_session) {
         TVLog(@"H264: VTCompressionSessionCreate failed: %d", (int)status);
@@ -107,7 +104,9 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     if (@available(iOS 11.0, *)) {
         VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
                              (__bridge CFTypeRef)@(kH264KeyframeIntervalSeconds));
-        VTSessionSetProperty(_session, kVTCompressionPropertyKey_OpenGOP, kCFBooleanFalse);
+    }
+    if (@available(iOS 12.0, *)) {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowOpenGOP, kCFBooleanFalse);
     }
 
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(30));
@@ -221,7 +220,7 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     if (includeParameterSets) {
         CMVideoFormatDescriptionRef formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer);
         if (formatDesc) {
-            int spsCount = 0, ppsCount = 0;
+            size_t spsCount = 0, ppsCount = 0;
             const uint8_t *sps = NULL;
             const uint8_t *pps = NULL;
             size_t spsLen = 0, ppsLen = 0;
