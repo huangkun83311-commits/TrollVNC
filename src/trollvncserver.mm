@@ -2264,39 +2264,37 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     CFAbsoluteTime __tv_tStart = CFAbsoluteTimeGetCurrent();
 #endif
 
- // H.264: check if any client supports H.264
-rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
-rfbClientPtr h264Cl = NULL;
-BOOL hasH264Client = NO;
-while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
-    // 添加：打印每个客户端的编码信息
-    rfbLog("客户端 %s: 首选编码=0x%X (%d), enableH264=%s\n", 
-           h264Cl->host ? h264Cl->host : "未知",
-           h264Cl->preferredEncoding,
-           h264Cl->preferredEncoding,
-           h264Cl->enableH264 ? "YES" : "NO");
-    
-    if (h264Cl->enableH264) {
-        hasH264Client = YES;
-        break;
+    // H.264: check if any client supports H.264
+    rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
+    rfbClientPtr h264Cl = NULL;
+    BOOL hasH264Client = NO;
+    BOOL hasNonH264Client = NO;
+    while ((h264Cl = rfbClientIteratorNext(h264Iter))) {
+        if (h264Cl->enableH264) {
+            hasH264Client = YES;
+        } else {
+            hasNonH264Client = YES;
+        }
     }
-}
-rfbReleaseClientIterator(h264Iter);
+    rfbReleaseClientIterator(h264Iter);
 
-if (hasH264Client && gH264Encoder) {
-    rfbLog("*** 检测到 H.264 客户端，使用 H.264 编码 ***\n");
-    CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
-    if (h264Pb) {
-        [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:1.0];
+    if (hasH264Client && gH264Encoder) {
+        CVPixelBufferRef h264Pb = CMSampleBufferGetImageBuffer(sampleBuffer);
+        if (h264Pb) {
+            [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:gScale];
+        }
+        if (!hasNonH264Client) {
+            return;
+        }
     }
-    // rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);  // ← 删除这一行！
-    return;
-}else {
-    // 添加：打印不使用 H.264 的原因
+#if DEBUG
+else {
     rfbLog("使用普通编码 (hasH264Client=%s, gH264Encoder=%s)\n",
            hasH264Client ? "YES" : "NO",
            gH264Encoder ? "YES" : "NO");
 }
+#endif
+
 
 CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sampleBuffer);
 if (!pb) {
@@ -5030,50 +5028,28 @@ static void cleanupAndExit(int code) {
     exit(code);
 }
 
-extern "C" int tvGetLatestH264Data(
-    const uint8_t **outData,
-    size_t *outLen)
+extern "C" int tvGetLatestH264Data(const uint8_t **outData, size_t *outLen, uint32_t *outFlags)
 {
     pthread_mutex_lock(&gH264DataMutex);
 
-
-    if (!gLastKeyFrameData ||
-        gLastKeyFrameData.length == 0) {
-
+    if (!gHasKeyFrame || !gLatestH264Data || gLatestH264Data.length == 0) {
         pthread_mutex_unlock(&gH264DataMutex);
         return 0;
     }
 
-
-    static NSData *currentData = nil;
-
-    currentData = [gLastKeyFrameData copy];
-
-
-    *outData = (const uint8_t *)currentData.bytes;
-    *outLen = currentData.length;
-
-
-    if (currentData.length >= 5) {
-
-        const uint8_t *bytes = (const uint8_t *)currentData.bytes;
-
-        rfbLog(
-            "发送H264关键帧 %lu 字节: %02X %02X %02X %02X %02X\n",
-            (unsigned long)currentData.length,
-            bytes[0],
-            bytes[1],
-            bytes[2],
-            bytes[3],
-            bytes[4]
-        );
-    }
-
+    static NSData *s_currentFrame = nil;
+    s_currentFrame = [gLatestH264Data copy];
+    BOOL isKey = gLatestH264IsKeyFrame;
 
     pthread_mutex_unlock(&gH264DataMutex);
 
+    *outData = (const uint8_t *)s_currentFrame.bytes;
+    *outLen = s_currentFrame.length;
+    *outFlags = isKey ? 1u : 0u;
+
     return 1;
 }
+
 
 #ifdef THEBOOTSTRAP
 #define SINGLETON_PARENT_NAME "trollvncmanager"
@@ -5232,12 +5208,13 @@ int main(int argc, const char *argv[]) {
             const uint8_t *bytes = (const uint8_t *)naluData.bytes;
         
             rfbLog(
-                "H264编码器输出: %lu 字节, %s, 前16字节: "
-                "%02X %02X %02X %02X %02X %02X %02X %02X "
-                "%02X %02X %02X %02X %02X %02X %02X %02X\n",
-                (unsigned long)naluData.length,
-                isKeyFrame ? "关键帧" : "非关键帧",
-        
+                #if DEBUG
+                  "H264编码器输出: %lu 字节, %s, 前16字节: "
+                  "%02X %02X %02X %02X %02X %02X %02X %02X "
+                  "%02X %02X %02X %02X %02X %02X %02X %02X\n",
+                  (unsigned long)naluData.length,
+                  isKeyFrame ? "关键帧" : "非关键帧",
+                #endif
                 bytes[0], bytes[1], bytes[2], bytes[3],
                 bytes[4], bytes[5], bytes[6], bytes[7],
                 bytes[8], bytes[9], bytes[10], bytes[11],
