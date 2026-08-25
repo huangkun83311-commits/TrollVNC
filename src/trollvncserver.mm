@@ -46,6 +46,7 @@
 #import "ClipboardManager.h"
 #import "Control.h"
 #import "FBSOrientationObserver.h"
+#import "H264Encoder.h"
 #import "IOKitSPI.h"
 #import "Logging.h"
 #import "PSAssistiveTouchSettingsDetail.h"
@@ -85,6 +86,7 @@ static int gTileSize = 32;                  // Tile size for dirty detection (pi
 static int gFullscreenThresholdPercent = 0; // If changed tiles exceed this %, update full screen
 static int gMaxRectsLimit = 256;            // Max rects before falling back to bbox/fullscreen
 static BOOL gAsyncSwapEnabled = NO;         // Enable non-blocking swap (may cause tearing)
+static BOOL gH264Enabled = YES;             // Enable hardware H.264 (VideoToolbox) when a client requests it
 
 // Wheel scroll coalescing state (async, non-blocking)
 static double gWheelStepPx = 48.0;        // base pixels per wheel tick (lower = slower)
@@ -310,7 +312,9 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "  -s scale   Output scale 0<s<=1 (default: %.2f)\n", gScale);
     fprintf(stderr, "  -F spec    Frame rate: fps | min-max | min:pref:max\n");
     fprintf(stderr, "  -d sec     Defer window (0..0.5, default: %.3f)\n", gDeferWindowSec);
-    fprintf(stderr, "  -Q n       Max in-flight encodes (0=never drop, default: %d)\n\n", gMaxInflightUpdates);
+    fprintf(stderr, "  -Q n       Max in-flight encodes (0=never drop, default: %d)\n", gMaxInflightUpdates);
+    fprintf(stderr, "  -Z on|off  Hardware H.264 encoding via VideoToolbox when client requests it (default: %s)\n\n",
+            gH264Enabled ? "on" : "off");
 
     fprintf(stderr, "Dirty detection:\n");
     fprintf(stderr, "  -t size    Tile size (8..128, default: %d)\n", gTileSize);
@@ -1117,7 +1121,7 @@ static void parseCLI(int argc, const char *argv[]) {
 #pragma clang diagnostic pop
 
     int opt;
-    const char *optstr = "p:b:n:vA:c:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:Vh";
+    const char *optstr = "p:b:n:vA:c:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:VZ:h";
     optind = 1;
     while ((opt = getopt(__argc2, __argv2.data(), optstr)) != -1) {
         switch (opt) {
@@ -1525,6 +1529,20 @@ static void parseCLI(int argc, const char *argv[]) {
             TVLog(@"CLI: Verbose logging enabled (-V)");
             break;
         }
+        case 'Z': {
+            const char *val = optarg ? optarg : "on";
+            if (strcasecmp(val, "on") == 0 || strcmp(val, "1") == 0 || strcasecmp(val, "true") == 0) {
+                gH264Enabled = YES;
+                TVLog(@"CLI: H.264 encoding enabled (-Z %s)", [@(val) UTF8String]);
+            } else if (strcasecmp(val, "off") == 0 || strcmp(val, "0") == 0 || strcasecmp(val, "false") == 0) {
+                gH264Enabled = NO;
+                TVLog(@"CLI: H.264 encoding disabled (-Z %s)", [@(val) UTF8String]);
+            } else {
+                TVPrintError("Invalid -Z value: %s (expected on|off|1|0|true|false)", val);
+                exit(EXIT_FAILURE);
+            }
+            break;
+        }
         case 'h':
         default: {
             printUsageAndExit(argv[0]);
@@ -1561,6 +1579,19 @@ static int gBytesPerPixel = 4; // ARGB/BGRA 32-bit
 static void *gFrontBuffer = NULL; // Exposed to VNC clients via gScreen->frameBuffer
 static void *gBackBuffer = NULL;  // We render into this and then swap
 
+// H.264 (RFB "Open H.264 Encoding") support.
+// This is encoding number 50, the one noVNC's WebCodecs decoder expects. It is
+// NOT the TurboVNC/QEMU "VA H.264" number (0x48323634) that rfbproto.h calls
+// rfbEncodingH264; that one uses a different framing and is not what noVNC parses.
+static const int kTvEncodingOpenH264 = 50;
+static const uint32_t kTvH264FlagResetContext = 1;     // bit 0
+static const uint32_t kTvH264FlagResetAllContexts = 2; // bit 1
+
+static TVH264Encoder *gH264Encoder = nil;
+static CVPixelBufferPoolRef gH264PixelBufferPool = NULL;
+static std::atomic<int> gH264Inflight(0);              // in-flight H.264 encodes (backpressure)
+static std::atomic<bool> gH264ForceKeyframe(false);    // force the next encoded frame to be an IDR
+
 // Hash algorithm selection (auto: prefer CRC32 on ARM with hardware support)
 #if DEBUG
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
@@ -1573,6 +1604,14 @@ static const BOOL cUseCRC32Hash = NO;
 typedef struct {
     int x, y, w, h;
 } DirtyRect;
+
+// H.264 helpers (defined after the per-client state struct below).
+static BOOL tvHasH264Clients(void);
+static void tvMarkRectModifiedExcludingH264(int x1, int y1, int x2, int y2);
+static void tvMarkFullScreenModifiedExcludingH264(void);
+static void tvH264EncodeAndSendIfNeeded(void);
+static void tvH264InvalidateEncoder(void);
+static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe);
 
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
 NS_INLINE uint64_t crc32_update(uint64_t h, const uint8_t *data, size_t len) {
@@ -1950,7 +1989,7 @@ static int buildRectsFromPending(DirtyRect *rects, int maxRects) {
 
 NS_INLINE void markRectsModified(DirtyRect *rects, int rectCount) {
     for (int i = 0; i < rectCount; ++i) {
-        rfbMarkRectAsModified(gScreen, rects[i].x, rects[i].y, rects[i].x + rects[i].w, rects[i].y + rects[i].h);
+        tvMarkRectModifiedExcludingH264(rects[i].x, rects[i].y, rects[i].x + rects[i].w, rects[i].y + rects[i].h);
     }
 }
 
@@ -2094,6 +2133,12 @@ NS_INLINE void maybeResizeFramebufferForRotation(int rotQ) {
         memset(gPendingDirty, 0, gTileCount);
 
     gHasPending = NO;
+
+    // The H.264 encoder is tied to the output dimensions; recreate it lazily on
+    // the next captured frame and force a keyframe for the new geometry.
+    tvH264InvalidateEncoder();
+    gH264ForceKeyframe.store(true, std::memory_order_relaxed);
+
     TVLog(@"Resize: framebuffer changed to %dx%d (rotQ=%d, scale=%.3f)", gWidth, gHeight, rotQ, gScale);
 }
 
@@ -2481,6 +2526,11 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
     TVLogVerbose(@"unlock pixel buffer took %.3f ms", __tv_msUnlock);
 #endif
 
+    // Feed the freshly rendered back buffer to the hardware H.264 encoder and
+    // send it to any client that negotiated the Open H.264 encoding. This runs
+    // independently of the tight/dirty pipeline below.
+    tvH264EncodeAndSendIfNeeded();
+
     // If rotation just changed, force a full-screen update and reset dirty state
     // to avoid mixing hashes/pending dirties from the previous orientation.
     if (rotationChanged) {
@@ -2500,7 +2550,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
                 swapBuffers();
                 for (size_t i = 0; i < lockedCount; ++i)
                     pthread_mutex_unlock(locked[i]);
-                rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+                tvMarkFullScreenModifiedExcludingH264();
 
 #if DEBUG
                 CFAbsoluteTime __tv_tSwap1 = CFAbsoluteTimeGetCurrent();
@@ -2511,7 +2561,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
             } else {
                 copyWithStrideTight((uint8_t *)gFrontBuffer, (uint8_t *)gBackBuffer, gWidth, gHeight,
                                     (size_t)gWidth * (size_t)gBytesPerPixel);
-                rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+                tvMarkFullScreenModifiedExcludingH264();
 
 #if DEBUG
                 CFAbsoluteTime __tv_tSwap1 = CFAbsoluteTimeGetCurrent();
@@ -2522,7 +2572,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         } else {
             lockAllClientsBlocking();
             swapBuffers();
-            rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+            tvMarkFullScreenModifiedExcludingH264();
             unlockAllClientsBlocking();
 
 #if DEBUG
@@ -2565,7 +2615,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
                 swapBuffers();
                 for (size_t i = 0; i < lockedCount; ++i)
                     pthread_mutex_unlock(locked[i]);
-                rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+                tvMarkFullScreenModifiedExcludingH264();
 
 #if DEBUG
                 CFAbsoluteTime __tv_tSwap1 = CFAbsoluteTimeGetCurrent();
@@ -2577,7 +2627,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
                 // Whole screen copy fallback (tight -> tight)
                 copyWithStrideTight((uint8_t *)gFrontBuffer, (uint8_t *)gBackBuffer, gWidth, gHeight,
                                     (size_t)gWidth * (size_t)gBytesPerPixel);
-                rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+                tvMarkFullScreenModifiedExcludingH264();
 
 #if DEBUG
                 CFAbsoluteTime __tv_tSwap1 = CFAbsoluteTimeGetCurrent();
@@ -2588,7 +2638,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
             // Blocking swap to avoid tearing
             lockAllClientsBlocking();
             swapBuffers();
-            rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+            tvMarkFullScreenModifiedExcludingH264();
             unlockAllClientsBlocking();
 
 #if DEBUG
@@ -2794,7 +2844,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
             for (size_t i = 0; i < lockedCount; ++i)
                 pthread_mutex_unlock(locked[i]);
             if (fullScreen) {
-                rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+                tvMarkFullScreenModifiedExcludingH264();
             } else {
                 markRectsModified(rects, rectCount);
             }
@@ -2810,7 +2860,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
                 // Whole screen copy fallback (tight -> tight)
                 copyWithStrideTight((uint8_t *)gFrontBuffer, (uint8_t *)gBackBuffer, gWidth, gHeight,
                                     (size_t)gWidth * (size_t)gBytesPerPixel);
-                rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+                tvMarkFullScreenModifiedExcludingH264();
 
 #if DEBUG
                 CFAbsoluteTime __tv_tSwap1 = CFAbsoluteTimeGetCurrent();
@@ -2834,7 +2884,7 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         lockAllClientsBlocking();
         swapBuffers();
         if (fullScreen) {
-            rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+            tvMarkFullScreenModifiedExcludingH264();
         } else {
             markRectsModified(rects, rectCount);
         }
@@ -3106,10 +3156,285 @@ typedef struct {
     double wheelAccumPx;               // accumulated scroll in pixels (+down, -up) for this client
     BOOL wheelFlushScheduled;          // whether a flush is pending for this client
     BOOL isRepeaterClient;             // whether this client is a repeater
+    BOOL wantsH264;                    // client advertised the Open H.264 encoding (50)
     char clientId8[CLIENT_ID_LEN + 1]; // cached 8-char client id (NUL-terminated)
 } TVClientState;
 
 NS_INLINE TVClientState *tvGetClientState(rfbClientPtr cl) { return cl ? (TVClientState *)cl->clientData : NULL; }
+
+#pragma mark - H.264 Encoding & Send
+
+// Detect when a client advertises the Open H.264 encoding (50). libvncserver
+// does not know this encoding, so its SetEncodings handler offers unknown
+// positive numbers to registered protocol extensions as "pseudo" encodings.
+// We advertise 50 and flip the per-client flag, which the framebuffer pipeline
+// uses to route that client onto the hardware H.264 path.
+static int sTvH264PseudoEncodings[] = {kTvEncodingOpenH264, 0};
+
+static rfbBool tvH264EnablePseudoEncoding(rfbClientPtr cl, void **data, int encodingNumber) {
+    if (encodingNumber != kTvEncodingOpenH264)
+        return FALSE;
+
+    TVClientState *st = tvGetClientState(cl);
+    if (st && !st->wantsH264) {
+        st->wantsH264 = YES;
+        // Force an IDR so a freshly joined client can decode right away.
+        gH264ForceKeyframe.store(true, std::memory_order_relaxed);
+        TVLog(@"Client enabled H.264 (Open H.264) encoding");
+    }
+    if (data)
+        *data = (void *)1; // non-NULL so libvncserver records the extension as enabled
+    return TRUE;
+}
+
+static rfbProtocolExtension sTvH264Extension = {
+    NULL,                        // newClient
+    NULL,                        // init
+    sTvH264PseudoEncodings,      // pseudoEncodings
+    tvH264EnablePseudoEncoding,  // enablePseudoEncoding
+    NULL,                        // handleMessage
+    NULL,                        // close
+    NULL,                        // usage
+    NULL,                        // processArgument
+    NULL,                        // next
+};
+
+static BOOL tvHasH264Clients(void) {
+    if (!gH264Enabled || !gScreen)
+        return NO;
+
+    BOOL found = NO;
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    while ((cl = rfbClientIteratorNext(it))) {
+        TVClientState *st = tvGetClientState(cl);
+        if (st && st->wantsH264) {
+            found = YES;
+            break;
+        }
+    }
+    rfbReleaseClientIterator(it);
+    return found;
+}
+
+// Mark a rectangle modified for every client EXCEPT those on the H.264 path
+// (they receive full frames directly from the encoder instead of libvncserver's
+// tight/raw pipeline).
+static void tvMarkRectModifiedExcludingH264(int x1, int y1, int x2, int y2) {
+    if (!gScreen)
+        return;
+
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
+    if (x1 < 0)
+        x1 = 0;
+    if (y1 < 0)
+        y1 = 0;
+    if (x2 > gWidth)
+        x2 = gWidth;
+    if (y2 > gHeight)
+        y2 = gHeight;
+    if (x1 >= x2 || y1 >= y2)
+        return;
+
+    sraRegionPtr region = sraRgnCreateRect(x1, y1, x2, y2);
+    if (!region)
+        return;
+
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    while ((cl = rfbClientIteratorNext(it))) {
+        TVClientState *st = tvGetClientState(cl);
+        if (st && st->wantsH264)
+            continue;
+        pthread_mutex_lock(&cl->updateMutex);
+        sraRgnOr(cl->modifiedRegion, region);
+        pthread_cond_signal(&cl->updateCond);
+        pthread_mutex_unlock(&cl->updateMutex);
+    }
+    rfbReleaseClientIterator(it);
+    sraRgnDestroy(region);
+}
+
+static void tvMarkFullScreenModifiedExcludingH264(void) {
+    tvMarkRectModifiedExcludingH264(0, 0, gWidth, gHeight);
+}
+
+static void tvH264InvalidateEncoder(void) {
+    [gH264Encoder invalidate];
+    gH264Encoder = nil;
+    if (gH264PixelBufferPool) {
+        CVPixelBufferPoolRelease(gH264PixelBufferPool);
+        gH264PixelBufferPool = NULL;
+    }
+}
+
+static BOOL tvH264EnsureEncoder(void) {
+    if (gH264Encoder && gH264PixelBufferPool)
+        return YES;
+    if (gWidth <= 0 || gHeight <= 0)
+        return NO;
+
+    tvH264InvalidateEncoder();
+
+    gH264Encoder = [[TVH264Encoder alloc] initWithWidth:gWidth height:gHeight];
+    if (!gH264Encoder) {
+        TVLog(@"H264: failed to create VideoToolbox encoder");
+        return NO;
+    }
+
+    NSDictionary *attrs = @{
+        (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferWidthKey : @(gWidth),
+        (id)kCVPixelBufferHeightKey : @(gHeight),
+        (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+    };
+    CVReturn cv = CVPixelBufferPoolCreate(kCFAllocatorDefault, (__bridge CFDictionaryRef)attrs, &gH264PixelBufferPool);
+    if (cv != kCVReturnSuccess || !gH264PixelBufferPool) {
+        TVLog(@"H264: failed to create pixel buffer pool (%d)", (int)cv);
+        [gH264Encoder invalidate];
+        gH264Encoder = nil;
+        return NO;
+    }
+
+    gH264Encoder.outputHandler = ^(NSData *data, BOOL isKeyframe) {
+        tvH264DeliverFrame(data, isKeyframe);
+    };
+
+    gH264ForceKeyframe.store(true, std::memory_order_relaxed);
+    TVLog(@"H264: encoder ready %dx%d", gWidth, gHeight);
+    return YES;
+}
+
+NS_INLINE void tvPutU16BE(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)(v & 0xFF);
+}
+
+NS_INLINE void tvPutU32BE(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)(v & 0xFF);
+}
+
+// Send one Open H.264 framebuffer update rect to a client. The wire format is:
+//   FramebufferUpdate header + rect header(x,y,w,h,encoding=50)
+//   + U32 length + U32 flags + Annex-B NAL data.
+static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyframe) {
+    if (!cl || !data || data.length == 0)
+        return;
+    TVClientState *st = tvGetClientState(cl);
+    if (!st || !st->wantsH264)
+        return;
+
+    // Consume the client's outstanding FramebufferUpdateRequest, if any. This
+    // mirrors libvncserver: one update is sent per request.
+    pthread_mutex_lock(&cl->updateMutex);
+    BOOL haveRequest = !sraRgnEmpty(cl->requestedRegion);
+    if (haveRequest)
+        sraRgnMakeEmpty(cl->requestedRegion);
+    pthread_mutex_unlock(&cl->updateMutex);
+
+    if (!haveRequest)
+        return; // nothing pending; the client will ask again
+
+    uint32_t flags = isKeyframe ? kTvH264FlagResetContext : 0;
+
+    uint8_t header[24];
+    header[0] = rfbFramebufferUpdate;
+    header[1] = 0;
+    tvPutU16BE(header + 2, 1);                  // nRects
+    tvPutU16BE(header + 4, 0);                  // x
+    tvPutU16BE(header + 6, 0);                  // y
+    tvPutU16BE(header + 8, (uint16_t)gWidth);   // w
+    tvPutU16BE(header + 10, (uint16_t)gHeight); // h
+    tvPutU32BE(header + 12, (uint32_t)kTvEncodingOpenH264);
+    tvPutU32BE(header + 16, (uint32_t)data.length);
+    tvPutU32BE(header + 20, flags);
+
+    pthread_mutex_lock(&cl->sendMutex);
+    int rc1 = rfbWriteExact(cl, (const char *)header, (int)sizeof(header));
+    int rc2 = (rc1 >= 0) ? rfbWriteExact(cl, (const char *)data.bytes, (int)data.length) : -1;
+    pthread_mutex_unlock(&cl->sendMutex);
+
+    if (rc1 < 0 || rc2 < 0)
+        TVLogVerbose(@"H264: send to client failed");
+}
+
+// Encoder output handler: fan the encoded access unit out to every H.264 client.
+static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
+    gH264Inflight.fetch_sub(1, std::memory_order_acq_rel);
+    if (!gScreen || !data || data.length == 0)
+        return;
+
+    // Snapshot clients under the iterator, then release it before writing so we
+    // never hold the client-list lock while blocking on a socket.
+    rfbClientPtr clients[16];
+    int count = 0;
+
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    while ((cl = rfbClientIteratorNext(it))) {
+        TVClientState *st = tvGetClientState(cl);
+        if (st && st->wantsH264 && count < (int)(sizeof(clients) / sizeof(clients[0]))) {
+            rfbIncrClientRef(cl);
+            clients[count++] = cl;
+        }
+    }
+    rfbReleaseClientIterator(it);
+
+    for (int i = 0; i < count; ++i) {
+        tvH264SendFrameToClient(clients[i], data, isKeyframe);
+        rfbDecrClientRef(clients[i]);
+    }
+}
+
+// Called from the capture pipeline after each frame is rendered into gBackBuffer.
+static void tvH264EncodeAndSendIfNeeded(void) {
+    if (!gH264Enabled)
+        return;
+    if (!tvHasH264Clients())
+        return;
+    if (gMaxInflightUpdates > 0 && gH264Inflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates)
+        return; // backpressure
+    if (!tvH264EnsureEncoder())
+        return;
+    if (!gBackBuffer || gWidth <= 0 || gHeight <= 0)
+        return;
+
+    CVPixelBufferRef h264PB = NULL;
+    CVReturn cv = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, gH264PixelBufferPool, &h264PB);
+    if (cv != kCVReturnSuccess || !h264PB)
+        return;
+
+    // Copy the tightly-packed BGRA back buffer into the pooled pixel buffer
+    // (encoding is asynchronous, so we cannot reference gBackBuffer directly).
+    CVPixelBufferLockBaseAddress(h264PB, 0);
+    uint8_t *dst = (uint8_t *)CVPixelBufferGetBaseAddress(h264PB);
+    size_t dstBPR = CVPixelBufferGetBytesPerRow(h264PB);
+    const uint8_t *src = (const uint8_t *)gBackBuffer;
+    size_t srcBPR = (size_t)gWidth * (size_t)gBytesPerPixel;
+    size_t copyBPR = (dstBPR < srcBPR) ? dstBPR : srcBPR;
+    for (int row = 0; row < gHeight; ++row) {
+        memcpy(dst + (size_t)row * dstBPR, src + (size_t)row * srcBPR, copyBPR);
+    }
+    CVPixelBufferUnlockBaseAddress(h264PB, 0);
+
+    BOOL forceKeyframe = gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
+    gH264Inflight.fetch_add(1, std::memory_order_relaxed);
+    [gH264Encoder encodePixelBuffer:h264PB forceKeyframe:forceKeyframe];
+
+    CVPixelBufferRelease(h264PB);
+}
 
 static dispatch_queue_t gWheelQueue = nil; // serial queue for wheel gestures
 
@@ -4596,6 +4921,10 @@ static void setupRfbScreen(int argc, const char *argv[]) {
     gScreen->displayHook = displayHook;
     gScreen->displayFinishedHook = displayFinishedHook;
     gScreen->setDesktopSizeHook = setDesktopSizeHook;
+
+    // Register the H.264 protocol extension so we learn when a client advertises
+    // the Open H.264 encoding (50).
+    rfbRegisterProtocolExtension(&sTvH264Extension);
 }
 
 static void setupRfbEventHandlers(void) {
@@ -4979,6 +5308,9 @@ static void cleanupAndExit(int code) {
     if (gFileTransferRegistered) {
         rfbUnregisterTightVNCFileTransferExtension();
     }
+
+    // Tear down the hardware H.264 encoder.
+    tvH264InvalidateEncoder();
 
     if (gScreen) {
         rfbShutdownServer(gScreen, YES);

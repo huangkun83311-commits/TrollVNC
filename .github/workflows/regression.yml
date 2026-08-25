@@ -1,0 +1,26 @@
+name: Regression (H.264)
+
+# Lightweight, fast regression that runs on every push and PR without needing
+# the iOS toolchain. It checks the server<->noVNC H.264 wire-format contract
+# (encoding number 50, IDR keyframe forcing, Annex-B parsing) against the real
+# bundled noVNC source.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  h264:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run H.264 regression
+        run: node tests/regression-h264.mjs

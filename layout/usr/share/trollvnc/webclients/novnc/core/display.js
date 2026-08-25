@@ -411,6 +411,21 @@ export default class Display {
         this._damage(x, y, img.width, img.height);
     }
 
+    // Render a decoded H.264 VideoFrame. The frame is a pending object produced
+    // by the H264 decoder (see core/decoders/h264.js) which resolves to a
+    // browser VideoFrame; rendering is deferred until the frame is ready so the
+    // render queue stays in order.
+    videoFrame(x, y, width, height, frame) {
+        this._renderQPush({
+            'type': 'frame',
+            'frame': frame,
+            'x': x,
+            'y': y,
+            'width': width,
+            'height': height
+        });
+    }
+
     autoscale(containerWidth, containerHeight) {
         let scaleRatio;
 
@@ -508,6 +523,35 @@ export default class Display {
                         a.img.addEventListener('load', this._resumeRenderQ);
                         // We need to wait for this image to 'load'
                         // to keep things in-order
+                        ready = false;
+                    }
+                    break;
+                case 'frame':
+                    if (a.frame.ready) {
+                        // The encoded frame may be larger than the rect due to
+                        // limitations of the encoder, so crop it to the rect.
+                        let frame = a.frame.frame;
+                        if (frame.codedWidth < a.width || frame.codedHeight < a.height) {
+                            Log.Warn("Decoded video frame does not cover its full rectangle area. Expecting at least " +
+                                      a.width + "x" + a.height + " but got " +
+                                      frame.codedWidth + "x" + frame.codedHeight);
+                        }
+                        const sx = 0;
+                        const sy = 0;
+                        const sw = a.width;
+                        const sh = a.height;
+                        const dx = a.x;
+                        const dy = a.y;
+                        const dw = sw;
+                        const dh = sh;
+                        this._drawCtx.drawImage(frame, sx, sy, sw, sh, dx, dy, dw, dh);
+                        this._damage(a.x, a.y, a.width, a.height);
+                        frame.close();
+                    } else {
+                        let display = this;
+                        a.frame.promise.then(() => {
+                            display._scanRenderQ();
+                        });
                         ready = false;
                     }
                     break;

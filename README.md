@@ -51,6 +51,7 @@ trollvncserver -p 5901 -n "My iPhone" [options]
 - `-F spec`   Frame rate: single `fps`, range `min-max`, or full `min:pref:max`; on iOS 15+ a range is applied, on iOS 14 the max (or preferred) is used
 - `-d sec`    Defer update window in seconds to coalesce changes (`0..0.5`, default: `0.015`)
 - `-Q n`      Max in-flight updates before dropping new frames (`0..8`, default: `2`; `0` disables dropping)
+- `-Z on|off` Hardware H.264 encoding via VideoToolbox when a client requests it (default: `on`)
 
 **Dirty detection**:
 
@@ -213,6 +214,19 @@ Use `-F` to set the `CADisplayLink` frame rate:
 ### Keep-Alive (Prevent Sleep)
 
 Use `-A` to periodically send a harmless dummy key event to keep the device awake while clients are connected.
+
+## H.264 Encoding
+
+When a client advertises the RFB "Open H.264 Encoding" (encoding `50`, as noVNC 1.6+ does), TrollVNC encodes the screen with the device's hardware H.264 encoder (VideoToolbox) instead of Tight. H.264 is dramatically smoother for screen mirroring, especially over constrained links.
+
+- Enabled by default; disable with `-Z off`.
+- Uses the H.264 **Baseline** profile with frame reordering disabled (no B-frames), so frames always arrive in decode order.
+- **Keyframes (IDR) are forced** at encoder start, after every new H.264 client connects, and after a framebuffer resize, and SPS/PPS are prepended to each keyframe. This is what lets a browser decoder start decoding immediately — the classic "noVNC can't decode / black screen" symptom happens when VideoToolbox only emits P-frames or the SPS/PPS is missing.
+
+**Browser (noVNC) requirements:**
+
+- H.264 decoding uses the browser's built-in WebCodecs `VideoDecoder`, so it needs a noVNC version ≥ 1.6 and a browser that supports WebCodecs H.264 (Chrome/Edge/Safari; Firefox support is partial).
+- WebCodecs only works in a **secure context**, i.e. `https`/`wss` (or `localhost`). Use the built-in `-e`/`-k` TLS options (see "Using Secure WebSockets") so the browser can decode H.264.
 
 ## Wheel/Scroll Tuning
 
@@ -647,6 +661,21 @@ For advanced tuning (HTTP/TLS, wheel tuning, dirty detection, etc.), commit your
   - `dsym-default`, `dsym-rootless`, `dsym-roothide`, `dsym-bootstrap`
 - Download them from the run page → `Artifacts`.
 - If you push to the `release` branch (and the workflow runs there), a GitHub Release is created automatically with packaged files attached.
+
+## Regression Tests
+
+The `Regression (H.264)` workflow runs on every push and PR and verifies the H.264 server↔noVNC wire-format contract without needing an iOS device or a browser. It checks, against the actual bundled noVNC source:
+
+- the noVNC `H264Parser` recognises an IDR keyframe and extracts SPS/PPS (the failure mode behind "noVNC can't decode keyframes");
+- a P-slice-only stream is *not* treated as a keyframe (the "VideoToolbox outputs only non-keyframes" regression);
+- both sides use the Open H.264 encoding number `50`, not the TurboVNC/QEMU `0x48323634` "VA H.264" number;
+- the server forces IDR keyframes and disables B-frame reordering.
+
+Run it locally with:
+
+```sh
+node tests/regression-h264.mjs
+```
 
 ## Build Dependencies
 
