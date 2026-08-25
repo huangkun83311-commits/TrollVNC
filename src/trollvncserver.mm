@@ -113,6 +113,7 @@ static BOOL gLatestH264IsKeyFrame = NO;
 static NSData *gLastKeyFrameData = nil;
 static BOOL gHasKeyFrame = NO;
 static pthread_mutex_t gH264DataMutex = PTHREAD_MUTEX_INITIALIZER;
+static std::atomic<int> gH264FrameReady(0);  // ← 添加这一行
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
@@ -2258,11 +2259,16 @@ NS_INLINE void unlockAllClientsBlocking(void) {
 }
 
 static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
-
 #if DEBUG
     // Perf: overall start timestamp
     CFAbsoluteTime __tv_tStart = CFAbsoluteTimeGetCurrent();
 #endif
+
+    // H.264 帧就绪 → 触发 VNC 帧更新（在 ReplayKit 回调线程，安全）
+    if (gH264FrameReady.load()) {
+        gH264FrameReady.store(0);
+        rfbMarkRectAsModified(gScreen, 0, 0, gWidth, gHeight);
+    }
 
     // H.264: check if any client supports H.264
     rfbClientIteratorPtr h264Iter = rfbGetClientIterator(gScreen);
@@ -2283,10 +2289,12 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         if (h264Pb) {
             [gH264Encoder encodePixelBuffer:h264Pb orientation:gRotationQuad.load() scale:gScale];
         }
+
         if (!hasNonH264Client) {
             return;
         }
     }
+
 #if DEBUG
 else {
     rfbLog("使用普通编码 (hasH264Client=%s, gH264Encoder=%s)\n",
@@ -5204,58 +5212,27 @@ int main(int argc, const char *argv[]) {
         [gH264Encoder setKeyFrameInterval:30];
 
         gH264Encoder.outputBlock = ^(NSData *naluData, BOOL isKeyFrame) {
-        
             const uint8_t *bytes = (const uint8_t *)naluData.bytes;
-        
-            #if DEBUG
-                        const uint8_t *bytes = (const uint8_t *)naluData.bytes;
-                        rfbLog(
-                            "H264编码器输出: %lu 字节, %s, 前16字节: "
-                            "%02X %02X %02X %02X %02X %02X %02X %02X "
-                            "%02X %02X %02X %02X %02X %02X %02X %02X\n",
-                            (unsigned long)naluData.length,
-                            isKeyFrame ? "关键帧" : "非关键帧",
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7],
-                            bytes[8], bytes[9], bytes[10], bytes[11],
-                            bytes[12], bytes[13], bytes[14], bytes[15]
-                        );
-            #endif
-
-        
+            rfbLog("H264编码器输出: %lu 字节, %s, 前16字节: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                   (unsigned long)naluData.length,
+                   isKeyFrame ? "关键帧" : "非关键帧",
+                   bytes[0], bytes[1], bytes[2], bytes[3],
+                   bytes[4], bytes[5], bytes[6], bytes[7],
+                   bytes[8], bytes[9], bytes[10], bytes[11],
+                   bytes[12], bytes[13], bytes[14], bytes[15]);
         
             pthread_mutex_lock(&gH264DataMutex);
-        
-        
-            // 保存当前帧
             gLatestH264Data = [naluData copy];
-        
             gLatestH264IsKeyFrame = isKeyFrame;
-        
-        
-            // 如果是IDR，保存下来
             if (isKeyFrame) {
-        
                 gLastKeyFrameData = [naluData copy];
-        
                 gHasKeyFrame = YES;
-        
             }
-        
-        
             pthread_mutex_unlock(&gH264DataMutex);
         
-        
-        
-            // 通知libvncserver发送
-            rfbMarkRectAsModified(
-                gScreen,
-                0,
-                0,
-                gWidth,
-                gHeight
-            );
+            gH264FrameReady = 1;
         };
+
         initializeTilingOrReset();
         initializeAndRunRfbServer();
 
