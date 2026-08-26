@@ -1594,6 +1594,8 @@ static TVH264Encoder *gH264Encoder = nil;
 static CVPixelBufferPoolRef gH264PixelBufferPool = NULL;
 static std::atomic<int> gH264Inflight(0);              // in-flight H.264 encodes (backpressure)
 static std::atomic<bool> gH264ForceKeyframe(false);    // force the next encoded frame to be an IDR
+static char *gH264OutputPath = NULL;                   // diagnostic: dump Annex-B to this file
+static FILE *gH264OutputFile = NULL;                   // diagnostic: open dump handle
 
 // Hash algorithm selection (auto: prefer CRC32 on ARM with hardware support)
 #if DEBUG
@@ -3406,6 +3408,19 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
     if (!gScreen || !data || data.length == 0)
         return;
 
+    // Diagnostic: dump the Annex-B access units so they can be inspected off
+    // device (e.g. decode them with ffmpeg to check dimensions/color). Set
+    // TROLLVNC_H264_OUTPUT to an absolute writable path.
+    if (gH264OutputPath && !gH264OutputFile) {
+        gH264OutputFile = fopen(gH264OutputPath, "wb");
+        if (gH264OutputFile)
+            TVLog(@"H264: dumping Annex-B to %s", gH264OutputPath);
+    }
+    if (gH264OutputFile) {
+        fwrite(data.bytes, 1, data.length, gH264OutputFile);
+        fflush(gH264OutputFile);
+    }
+
     // Snapshot clients under the iterator, then release it before writing so we
     // never hold the client-list lock while blocking on a socket.
     rfbClientPtr clients[16];
@@ -3421,6 +3436,8 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
         }
     }
     rfbReleaseClientIterator(it);
+
+    TVLogVerbose(@"H264: deliver %lu bytes key=%d to %d client(s)", (unsigned long)data.length, isKeyframe, count);
 
     for (int i = 0; i < count; ++i) {
         tvH264SendFrameToClient(clients[i], data, isKeyframe);
@@ -5474,6 +5491,11 @@ int main(int argc, const char *argv[]) {
 
     @autoreleasepool {
         parseCLI(argc, argv);
+
+        // Diagnostic: dump encoded H.264 Annex-B to a file for off-device analysis.
+        const char *h264Out = getenv("TROLLVNC_H264_OUTPUT");
+        if (h264Out && *h264Out)
+            gH264OutputPath = strdup(h264Out);
 
 #ifdef THEBOOTSTRAP
         monitorParentProcess();
