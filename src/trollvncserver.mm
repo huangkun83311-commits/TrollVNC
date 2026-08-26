@@ -1614,6 +1614,7 @@ typedef struct {
 
 // H.264 helpers (defined after the per-client state struct below).
 static BOOL tvHasH264Clients(void);
+static BOOL tvHasH264ClientWithPendingRequest(void);
 static void tvMarkRectModifiedExcludingH264(int x1, int y1, int x2, int y2);
 static void tvMarkFullScreenModifiedExcludingH264(void);
 static void tvH264EncodeAndSendIfNeeded(void);
@@ -3234,6 +3235,34 @@ static BOOL tvHasH264Clients(void) {
     return found;
 }
 
+// Encode on demand: only encode when at least one H.264 client has an
+// outstanding FramebufferUpdateRequest. noVNC keeps exactly one request in
+// flight (it sends the next only after rendering the previous frame), so this
+// gates encoding to the client's actual consumption rate and avoids flooding
+// the socket / stalling on a blocked write.
+static BOOL tvHasH264ClientWithPendingRequest(void) {
+    if (!gH264Enabled || !gScreen)
+        return NO;
+
+    BOOL found = NO;
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    while ((cl = rfbClientIteratorNext(it))) {
+        TVClientState *st = tvGetClientState(cl);
+        if (st && st->wantsH264) {
+            pthread_mutex_lock(&cl->updateMutex);
+            BOOL pending = !sraRgnEmpty(cl->requestedRegion);
+            pthread_mutex_unlock(&cl->updateMutex);
+            if (pending) {
+                found = YES;
+                break;
+            }
+        }
+    }
+    rfbReleaseClientIterator(it);
+    return found;
+}
+
 static void tvH264MarkAllClientsNeedReset(void) {
     if (!gScreen)
         return;
@@ -3474,8 +3503,8 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
 static void tvH264EncodeAndSendIfNeeded(void) {
     if (!gH264Enabled)
         return;
-    if (!tvHasH264Clients())
-        return;
+    if (!tvHasH264ClientWithPendingRequest())
+        return; // no client is waiting for a frame; encode on demand
     if (gMaxInflightUpdates > 0 && gH264Inflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates)
         return; // backpressure
     if (!tvH264EnsureEncoder())
