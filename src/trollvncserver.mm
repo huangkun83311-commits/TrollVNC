@@ -3366,18 +3366,14 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
     if (!st || !st->wantsH264)
         return;
 
-    // Consume the client's outstanding FramebufferUpdateRequest, if any. This
-    // mirrors libvncserver: one update is sent per request.
+    // Consume any outstanding FramebufferUpdateRequest so requests don't
+    // accumulate, but still send the frame even without one. noVNC stalls its
+    // request loop while the previous frame renders, so gating delivery on a
+    // pending request dropped 115/119 frames and produced a black screen.
+    // Backpressure is provided by the socket itself (TCP/WebSocket buffer).
     pthread_mutex_lock(&cl->updateMutex);
-    BOOL haveRequest = !sraRgnEmpty(cl->requestedRegion);
-    if (haveRequest)
-        sraRgnMakeEmpty(cl->requestedRegion);
+    sraRgnMakeEmpty(cl->requestedRegion);
     pthread_mutex_unlock(&cl->updateMutex);
-
-    if (!haveRequest) {
-        gH264DroppedCount.fetch_add(1, std::memory_order_relaxed);
-        return; // nothing pending; the client will ask again
-    }
 
     // Only the first frame (or a frame after a resize) needs ResetContext so
     // noVNC rebuilds its decoder; steady-state frames reuse the context.

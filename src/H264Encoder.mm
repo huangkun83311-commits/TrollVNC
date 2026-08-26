@@ -96,6 +96,11 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     // minimal: extra props such as RealTime/AllowFrameReordering/DataRateLimits
     // can change the emitted SPS in ways some browser WebCodecs decoders reject
     // (black screen with no error).
+    // Real-time: emit each frame immediately instead of buffering (required for
+    // our continuous push-style pipeline; the demand-gated reference encoder
+    // doesn't need it).
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+
     if (@available(iOS 15.0, *)) {
         VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel);
     } else {
