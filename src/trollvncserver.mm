@@ -1596,6 +1596,8 @@ static std::atomic<int> gH264Inflight(0);              // in-flight H.264 encode
 static std::atomic<bool> gH264ForceKeyframe(false);    // force the next encoded frame to be an IDR
 static char *gH264OutputPath = NULL;                   // diagnostic: dump Annex-B to this file
 static FILE *gH264OutputFile = NULL;                   // diagnostic: open dump handle
+static std::atomic<int> gH264SentCount(0);             // diagnostic: frames actually written
+static std::atomic<int> gH264DroppedCount(0);          // diagnostic: frames skipped (no request)
 
 // Hash algorithm selection (auto: prefer CRC32 on ARM with hardware support)
 #if DEBUG
@@ -3372,8 +3374,10 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
         sraRgnMakeEmpty(cl->requestedRegion);
     pthread_mutex_unlock(&cl->updateMutex);
 
-    if (!haveRequest)
+    if (!haveRequest) {
+        gH264DroppedCount.fetch_add(1, std::memory_order_relaxed);
         return; // nothing pending; the client will ask again
+    }
 
     // Only the first frame (or a frame after a resize) needs ResetContext so
     // noVNC rebuilds its decoder; steady-state frames reuse the context.
@@ -3400,6 +3404,8 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
 
     if (rc1 < 0 || rc2 < 0)
         TVLogVerbose(@"H264: send to client failed");
+
+    gH264SentCount.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Encoder output handler: fan the encoded access unit out to every H.264 client.
@@ -3422,6 +3428,25 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
             fwrite(data.bytes, 1, data.length, gH264OutputFile);
             sH264DumpBytes += data.length;
             fflush(gH264OutputFile);
+        }
+    }
+
+    // Diagnostic: write sent/dropped counters so we can tell whether frames
+    // actually reach the client or are dropped for lack of an update request.
+    {
+        static int sStatsCount = 0;
+        if ((++sStatsCount % 30) == 0) {
+            char buf[128];
+            int n = snprintf(buf, sizeof(buf), "sent=%d dropped=%d key=%d bytes=%lu\n",
+                             gH264SentCount.load(std::memory_order_relaxed),
+                             gH264DroppedCount.load(std::memory_order_relaxed),
+                             isKeyframe, (unsigned long)data.length);
+            (void)n;
+            FILE *f = fopen("/tmp/trollvnc_h264_stats.txt", "w");
+            if (f) {
+                fwrite(buf, 1, strlen(buf), f);
+                fclose(f);
+            }
         }
     }
 
