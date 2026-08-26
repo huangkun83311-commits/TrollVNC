@@ -95,9 +95,15 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
 }
 
 - (void)configureSession {
-    // Baseline profile + no reordering: no B-frames, decode-order == presentation-order.
+    // iOS hardware H.264 encoders do not produce Baseline; they natively support
+    // Main/High. Requesting Baseline can yield an undecodable/software stream.
+    // Use Constrained High where available (iOS 15+), else High (iOS 14).
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Baseline_AutoLevel);
+    if (@available(iOS 15.0, *)) {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel);
+    } else {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+    }
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(kH264GopSize));
 
@@ -110,12 +116,6 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     }
 
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(30));
-
-    // Emit BT.709 (sRGB) color space info in the SPS so browser decoders apply
-    // the correct YUV->RGB conversion instead of guessing BT.601.
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2);
 
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;
