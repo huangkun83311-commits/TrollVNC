@@ -132,12 +132,12 @@ console.log('H.264 regression tests');
         'server forces IDR keyframes (kVTEncodeFrameOptionKey_ForceKeyFrame)'
     );
     ok(
-        encoderSrc.includes('kVTCompressionPropertyKey_MaxKeyFrameInterval'),
-        'server emits periodic keyframes (kVTCompressionPropertyKey_MaxKeyFrameInterval)'
+        encoderSrc.includes('kVTCompressionPropertyKey_MaxAllowedFrameQP'),
+        'server caps quantization (kVTCompressionPropertyKey_MaxAllowedFrameQP)'
     );
     ok(
-        encoderSrc.includes('kVTCompressionPropertyKey_AllowFrameReordering'),
-        'server disables B-frame reordering (kVTCompressionPropertyKey_AllowFrameReordering)'
+        encoderSrc.includes('kVTProfileLevel_H264_ConstrainedHigh_AutoLevel'),
+        'server uses Constrained High profile (kVTProfileLevel_H264_ConstrainedHigh_AutoLevel)'
     );
 }
 
