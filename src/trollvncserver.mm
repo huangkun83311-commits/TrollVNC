@@ -3417,8 +3417,12 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
             TVLog(@"H264: dumping Annex-B to %s", gH264OutputPath);
     }
     if (gH264OutputFile) {
-        fwrite(data.bytes, 1, data.length, gH264OutputFile);
-        fflush(gH264OutputFile);
+        static size_t sH264DumpBytes = 0;
+        if (sH264DumpBytes < 10 * 1024 * 1024) {
+            fwrite(data.bytes, 1, data.length, gH264OutputFile);
+            sH264DumpBytes += data.length;
+            fflush(gH264OutputFile);
+        }
     }
 
     // Snapshot clients under the iterator, then release it before writing so we
@@ -5496,6 +5500,8 @@ int main(int argc, const char *argv[]) {
         const char *h264Out = getenv("TROLLVNC_H264_OUTPUT");
         if (h264Out && *h264Out)
             gH264OutputPath = strdup(h264Out);
+        else
+            gH264OutputPath = strdup("/var/mobile/Documents/trollvnc_h264.h264");
 
 #ifdef THEBOOTSTRAP
         monitorParentProcess();
