@@ -116,6 +116,12 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     // Periodic IDR so a client can (re)join at a keyframe.
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(kH264GopSize));
 
+    // No B-frames: decode order == presentation order. noVNC's H264 decoder
+    // matches decoder output to its pending-frame queue by timestamp and throws
+    // on reordered (B-frame) output, which stalls rendering after the first
+    // frame.
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
+
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;
     int bitRate = pixels >= 2'000'000 ? 6'000'000 : (pixels >= 1'000'000 ? 4'000'000 : 2'500'000);
