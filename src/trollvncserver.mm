@@ -1598,6 +1598,7 @@ static char *gH264OutputPath = NULL;                   // diagnostic: dump Annex
 static FILE *gH264OutputFile = NULL;                   // diagnostic: open dump handle
 static std::atomic<int> gH264SentCount(0);             // diagnostic: frames actually written
 static std::atomic<int> gH264DroppedCount(0);          // diagnostic: frames skipped (no request)
+static std::atomic<int> gH264NoRequestCount(0);        // diagnostic: encode skipped (no pending request)
 
 // Hash algorithm selection (auto: prefer CRC32 on ARM with hardware support)
 #if DEBUG
@@ -3460,11 +3461,12 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
     // actually reach the client or are dropped for lack of an update request.
     {
         static int sStatsCount = 0;
-        if ((++sStatsCount % 30) == 0) {
-            char buf[128];
-            int n = snprintf(buf, sizeof(buf), "sent=%d dropped=%d key=%d bytes=%lu\n",
+        if ((++sStatsCount % 10) == 0) {
+            char buf[160];
+            int n = snprintf(buf, sizeof(buf), "sent=%d dropped=%d noRequest=%d key=%d bytes=%lu\n",
                              gH264SentCount.load(std::memory_order_relaxed),
                              gH264DroppedCount.load(std::memory_order_relaxed),
+                             gH264NoRequestCount.load(std::memory_order_relaxed),
                              isKeyframe, (unsigned long)data.length);
             (void)n;
             FILE *f = fopen("/tmp/trollvnc_h264_stats.txt", "w");
@@ -3503,8 +3505,10 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
 static void tvH264EncodeAndSendIfNeeded(void) {
     if (!gH264Enabled)
         return;
-    if (!tvHasH264ClientWithPendingRequest())
+    if (!tvHasH264ClientWithPendingRequest()) {
+        gH264NoRequestCount.fetch_add(1, std::memory_order_relaxed);
         return; // no client is waiting for a frame; encode on demand
+    }
     if (gMaxInflightUpdates > 0 && gH264Inflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates)
         return; // backpressure
     if (!tvH264EnsureEncoder())
