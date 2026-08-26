@@ -27,13 +27,6 @@
 
 #import "Logging.h"
 
-// GOP size (in frames) and keyframe interval (in seconds). Tuned for screen
-// mirroring: frequent-enough keyframes for fast decoder (re)acquisition without
-// blowing up the bitrate. noVNC needs an IDR whenever it creates a decoder
-// context, so we also force one explicitly on demand.
-static const int kH264GopSize = 30;
-static const Float64 kH264KeyframeIntervalSeconds = 1.0;
-
 // 4-byte Annex-B start code emitted before every NAL unit.
 static const uint8_t kAnnexBStartCode[4] = {0x00, 0x00, 0x00, 0x01};
 
@@ -95,36 +88,27 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
 }
 
 - (void)configureSession {
-    // iOS hardware H.264 encoders do not produce Baseline; they natively support
-    // Main/High. Requesting Baseline can yield an undecodable/software stream.
-    // Use Constrained High where available (iOS 15+), else High (iOS 14).
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+    // iOS hardware H.264 encoders natively support Main/High. Use Constrained
+    // High where available (iOS 15+), else High (iOS 14). Keep the property set
+    // minimal: extra props such as RealTime/AllowFrameReordering/DataRateLimits
+    // can change the emitted SPS in ways some browser WebCodecs decoders reject
+    // (black screen with no error).
     if (@available(iOS 15.0, *)) {
         VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedHigh_AutoLevel);
     } else {
         VTSessionSetProperty(_session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
     }
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(kH264GopSize));
 
-    if (@available(iOS 11.0, *)) {
-        VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-                             (__bridge CFTypeRef)@(kH264KeyframeIntervalSeconds));
+    // Cap quantization to avoid over-compressing screen content (matches the
+    // known-good reference encoder).
+    if (@available(iOS 15.0, *)) {
+        VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxAllowedFrameQP, (__bridge CFTypeRef)@(48));
     }
-    if (@available(iOS 12.0, *)) {
-        VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowOpenGOP, kCFBooleanFalse);
-    }
-
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ExpectedFrameRate, (__bridge CFTypeRef)@(30));
 
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;
     int bitRate = pixels >= 2'000'000 ? 6'000'000 : (pixels >= 1'000'000 ? 4'000'000 : 2'500'000);
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitRate));
-
-    // Streaming-friendly: cap instantaneous rate at ~1.5x the average.
-    NSArray *limits = @[ @((int)(bitRate * 1.5)), @(1.0) ];
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)limits);
 }
 
 - (void)encodePixelBuffer:(CVPixelBufferRef)pixelBuffer forceKeyframe:(BOOL)forceKeyframe {
