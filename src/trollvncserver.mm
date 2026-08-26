@@ -5501,7 +5501,7 @@ int main(int argc, const char *argv[]) {
         if (h264Out && *h264Out)
             gH264OutputPath = strdup(h264Out);
         else
-            gH264OutputPath = strdup("/var/mobile/Documents/trollvnc_h264.h264");
+            gH264OutputPath = strdup("/tmp/trollvnc_h264.h264");
 
 #ifdef THEBOOTSTRAP
         monitorParentProcess();
