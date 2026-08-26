@@ -27,6 +27,9 @@
 
 #import "Logging.h"
 
+// GOP: emit an IDR every N frames so a client can (re)join the stream.
+static const int kH264GopSize = 30;
+
 // 4-byte Annex-B start code emitted before every NAL unit.
 static const uint8_t kAnnexBStartCode[4] = {0x00, 0x00, 0x00, 0x01};
 
@@ -104,6 +107,9 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     if (@available(iOS 15.0, *)) {
         VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxAllowedFrameQP, (__bridge CFTypeRef)@(48));
     }
+
+    // Periodic IDR so a client can (re)join at a keyframe.
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_MaxKeyFrameInterval, (__bridge CFTypeRef)@(kH264GopSize));
 
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;

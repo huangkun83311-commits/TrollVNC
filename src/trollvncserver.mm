@@ -3505,13 +3505,9 @@ static void tvH264EncodeAndSendIfNeeded(void) {
     }
     CVPixelBufferUnlockBaseAddress(h264PB, 0);
 
-    // Always encode an IDR. Frames are delivered asynchronously and a client
-    // may drop some of them (one-update-per-request); IDR-only framing means a
-    // dropped frame never breaks a P-frame reference chain, so every frame a
-    // client receives is independently decodable.
-    gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
+    BOOL forceKeyframe = gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
     gH264Inflight.fetch_add(1, std::memory_order_relaxed);
-    [gH264Encoder encodePixelBuffer:h264PB forceKeyframe:YES];
+    [gH264Encoder encodePixelBuffer:h264PB forceKeyframe:forceKeyframe];
 
     CVPixelBufferRelease(h264PB);
 }
