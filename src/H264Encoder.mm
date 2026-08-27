@@ -122,6 +122,13 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     // frame.
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
 
+    // Emit BT.709 color info in the SPS VUI. The reference encoder carries
+    // color (cICP) info; a bare SPS with no VUI can make some browser WebCodecs
+    // decoders stall after the first frame.
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);
+    VTSessionSetProperty(_session, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;
     int bitRate = pixels >= 2'000'000 ? 6'000'000 : (pixels >= 1'000'000 ? 4'000'000 : 2'500'000);
