@@ -1622,6 +1622,7 @@ static void tvH264EncodeAndSendIfNeeded(void);
 static void tvH264InvalidateEncoder(void);
 static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe);
 static void tvH264MarkAllClientsNeedReset(void);
+static void tvConsumeH264ClientRequests(void);
 
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
 NS_INLINE uint64_t crc32_update(uint64_t h, const uint8_t *data, size_t len) {
@@ -3189,6 +3190,18 @@ NS_INLINE TVClientState *tvGetClientState(rfbClientPtr cl) { return cl ? (TVClie
 // uses to route that client onto the hardware H.264 path.
 static int sTvH264PseudoEncodings[] = {kTvEncodingOpenH264, 0};
 
+// libvncserver's FramebufferUpdateRequest handler marks cl->modifiedRegion for
+// NON-incremental requests (rfbserver.c: "if (!msg.fur.incremental)
+// sraRgnOr(cl->modifiedRegion,tmpRegion)"). That makes its event loop send a
+// duplicate tight/raw update to an H.264 client, which races with (and consumes
+// the request ahead of) the encoder path. Force incremental so the request is
+// only recorded in requestedRegion and the encoder owns delivery for this client.
+static void tvH264FramebufferUpdateRequestHook(rfbClientPtr cl, rfbFramebufferUpdateRequestMsg *fur) {
+    TVClientState *st = tvGetClientState(cl);
+    if (st && st->wantsH264)
+        fur->incremental = TRUE;
+}
+
 static rfbBool tvH264EnablePseudoEncoding(rfbClientPtr cl, void **data, int encodingNumber) {
     if (encodingNumber != kTvEncodingOpenH264)
         return FALSE;
@@ -3199,6 +3212,7 @@ static rfbBool tvH264EnablePseudoEncoding(rfbClientPtr cl, void **data, int enco
         st->h264NeedsReset = YES; // first frame must carry ResetContext
         // Force an IDR so a freshly joined client can decode right away.
         gH264ForceKeyframe.store(true, std::memory_order_relaxed);
+        cl->clientFramebufferUpdateRequestHook = tvH264FramebufferUpdateRequestHook;
         TVLog(@"Client enabled H.264 (Open H.264) encoding");
     }
     if (data)
@@ -3273,6 +3287,27 @@ static void tvH264MarkAllClientsNeedReset(void) {
         TVClientState *st = tvGetClientState(cl);
         if (st && st->wantsH264)
             st->h264NeedsReset = YES;
+    }
+    rfbReleaseClientIterator(it);
+}
+
+// Consume each H.264 client's outstanding update request at ENCODE time, so one
+// FramebufferUpdateRequest produces exactly one encoded frame. Previously the
+// request was consumed at delivery (async), so the capture thread saw the same
+// request on several ticks and encoded 2 frames per request (inflight limit),
+// which desynchronised noVNC's one-request-one-update loop.
+static void tvConsumeH264ClientRequests(void) {
+    if (!gScreen)
+        return;
+    rfbClientIteratorPtr it = rfbGetClientIterator(gScreen);
+    rfbClientPtr cl;
+    while ((cl = rfbClientIteratorNext(it))) {
+        TVClientState *st = tvGetClientState(cl);
+        if (st && st->wantsH264) {
+            pthread_mutex_lock(&cl->updateMutex);
+            sraRgnMakeEmpty(cl->requestedRegion);
+            pthread_mutex_unlock(&cl->updateMutex);
+        }
     }
     rfbReleaseClientIterator(it);
 }
@@ -3396,11 +3431,9 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
     if (!st || !st->wantsH264)
         return;
 
-    // Consume any outstanding FramebufferUpdateRequest so requests don't
-    // accumulate, but still send the frame even without one. noVNC stalls its
-    // request loop while the previous frame renders, so gating delivery on a
-    // pending request dropped 115/119 frames and produced a black screen.
-    // Backpressure is provided by the socket itself (TCP/WebSocket buffer).
+    // The update request was already consumed at encode time
+    // (tvConsumeH264ClientRequests), so just clear again as a safety net in
+    // case a request slipped in; the frame is still sent regardless.
     pthread_mutex_lock(&cl->updateMutex);
     sraRgnMakeEmpty(cl->requestedRegion);
     pthread_mutex_unlock(&cl->updateMutex);
@@ -3511,6 +3544,9 @@ static void tvH264EncodeAndSendIfNeeded(void) {
     }
     if (gMaxInflightUpdates > 0 && gH264Inflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates)
         return; // backpressure
+    // Consume the request now (before the async encode completes) so the next
+    // capture tick doesn't see the same request and encode a second frame.
+    tvConsumeH264ClientRequests();
     if (!tvH264EnsureEncoder())
         return;
     if (!gBackBuffer || gWidth <= 0 || gHeight <= 0)
