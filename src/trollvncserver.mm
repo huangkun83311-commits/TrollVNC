@@ -3609,14 +3609,12 @@ static void tvH264EncodeAndSendIfNeeded(void) {
 
     // Encode every frame as an IDR. iOS VideoToolbox's P-frames (especially in
     // RealTime mode) are produced by the hardware encoder in a way that macOS
-    // VideoToolbox decodes but browser WebCodecs decoders (Chromium/Firefox,
-    // both ffmpeg-based) stall on: the IDR renders, the next P-frame never
-    // comes out of the decoder, and noVNC stops sending update requests (the
-    // "first frame then frozen" symptom). IDR frames are self-contained and
-    // decode reliably everywhere, so force one per frame. This trades bandwidth
-    // for correctness; revisit once the P-frame incompatibility is understood.
-    BOOL forceKeyframe = YES;
-    gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
+    // Emit a GOP (periodic IDR + P-frames) rather than IDR-every-frame. The
+    // device stream's P-frames decode fine in browser WebCodecs; IDR-every-frame
+    // sent full ~30KB keyframes every capture frame, which flooded the socket
+    // and caused repeated client disconnects. P-frames are ~10x smaller, so a
+    // GOP keeps the continuous push at a reasonable bitrate.
+    BOOL forceKeyframe = gH264ForceKeyframe.exchange(false, std::memory_order_acq_rel);
     gH264Inflight.fetch_add(1, std::memory_order_relaxed);
     [gH264Encoder encodePixelBuffer:h264PB forceKeyframe:forceKeyframe];
 
