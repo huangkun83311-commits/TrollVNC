@@ -1623,6 +1623,7 @@ static void tvH264InvalidateEncoder(void);
 static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe);
 static void tvH264MarkAllClientsNeedReset(void);
 static void tvConsumeH264ClientRequests(void);
+static void tvH264SyncCursorForDisplay(rfbClientPtr cl);
 
 #if defined(__aarch64__) || defined(__ARM_FEATURE_CRC32)
 NS_INLINE uint64_t crc32_update(uint64_t h, const uint8_t *data, size_t len) {
@@ -2023,8 +2024,8 @@ static std::atomic<int> gInflight(0);
 
 // Track encode life-cycle to provide backpressure via inflight counter
 static void displayHook(rfbClientPtr cl) {
-    (void)cl;
     gInflight.fetch_add(1, std::memory_order_relaxed);
+    tvH264SyncCursorForDisplay(cl);
 }
 
 static void displayFinishedHook(rfbClientPtr cl, int result) {
@@ -3291,6 +3292,24 @@ static void tvH264MarkAllClientsNeedReset(void) {
             st->h264NeedsReset = YES;
     }
     rfbReleaseClientIterator(it);
+}
+
+// Called from displayHook (before libvncserver's event loop decides whether to
+// send a cursor/keyboard update for this client). libvncserver sends those
+// updates via rfbSendUpdateBuf WITHOUT cl->sendMutex, on the event-loop thread,
+// while our H.264 frames are written on the encoder thread with cl->sendMutex.
+// The two would interleave and corrupt the H.264 byte stream (black screen).
+// Suppress every such per-client update for H.264 clients and keep the cursor
+// position in sync so the encoder owns all delivery for this client.
+static void tvH264SyncCursorForDisplay(rfbClientPtr cl) {
+    TVClientState *st = tvGetClientState(cl);
+    if (!st || !st->wantsH264)
+        return;
+    cl->enableCursorShapeUpdates = FALSE;
+    cl->enableCursorPosUpdates = FALSE;
+    cl->enableKeyboardLedState = FALSE;
+    cl->cursorX = cl->screen->cursorX;
+    cl->cursorY = cl->screen->cursorY;
 }
 
 // Consume each H.264 client's outstanding update request at ENCODE time, so one
