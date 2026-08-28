@@ -122,12 +122,10 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     // frame.
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
 
-    // Emit BT.709 color info in the SPS VUI. The reference encoder carries
-    // color (cICP) info; a bare SPS with no VUI can make some browser WebCodecs
-    // decoders stall after the first frame.
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);
-    VTSessionSetProperty(_session, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+    // NOTE: no explicit ColorPrimaries/TransferFunction/YCbCrMatrix (BT.709)
+    // SPS VUI. The iOS hardware encoder's bare SPS is the most compatible
+    // across browsers; extra VUI fields were a suspected cause of the Windows
+    // Chrome black-screen (decodes fine on macOS but not on Windows).
 
     // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
     int pixels = _width * _height;
@@ -271,6 +269,16 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
         offset += 4;
         if (nalLength == 0 || offset + nalLength > totalLength)
             break;
+
+        // Skip SEI (type 6) NAL units. VideoToolbox emits a "user data
+        // unregistered" SEI with its encoder info that some browser WebCodecs
+        // decoders (notably Windows Chromium) choke on; it is optional metadata
+        // and safe to drop.
+        uint8_t nalType = ((uint8_t)data[offset]) & 0x1f;
+        if (nalType == 6) {
+            offset += nalLength;
+            continue;
+        }
 
         [out appendBytes:kAnnexBStartCode length:sizeof(kAnnexBStartCode)];
         [out appendBytes:(data + offset) length:nalLength];
