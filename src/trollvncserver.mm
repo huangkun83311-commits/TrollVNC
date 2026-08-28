@@ -3176,6 +3176,7 @@ typedef struct {
     BOOL isRepeaterClient;             // whether this client is a repeater
     BOOL wantsH264;                    // client advertised the Open H.264 encoding (50)
     BOOL h264NeedsReset;               // send ResetContext flag on the next H.264 frame
+    BOOL h264WantsFrame;               // client has an outstanding update request (set in the FBU request hook)
     char clientId8[CLIENT_ID_LEN + 1]; // cached 8-char client id (NUL-terminated)
 } TVClientState;
 
@@ -3198,8 +3199,14 @@ static int sTvH264PseudoEncodings[] = {kTvEncodingOpenH264, 0};
 // only recorded in requestedRegion and the encoder owns delivery for this client.
 static void tvH264FramebufferUpdateRequestHook(rfbClientPtr cl, rfbFramebufferUpdateRequestMsg *fur) {
     TVClientState *st = tvGetClientState(cl);
-    if (st && st->wantsH264)
+    if (st && st->wantsH264) {
         fur->incremental = TRUE;
+        // Track the outstanding request with a private flag instead of
+        // cl->requestedRegion: libvncserver's event loop clears requestedRegion
+        // whenever it sends a cursor update or a one-time message, which would
+        // otherwise make the encoder's demand gate see "no request" and stall.
+        st->h264WantsFrame = YES;
+    }
 }
 
 static rfbBool tvH264EnablePseudoEncoding(rfbClientPtr cl, void **data, int encodingNumber) {
@@ -3264,14 +3271,9 @@ static BOOL tvHasH264ClientWithPendingRequest(void) {
     rfbClientPtr cl;
     while ((cl = rfbClientIteratorNext(it))) {
         TVClientState *st = tvGetClientState(cl);
-        if (st && st->wantsH264) {
-            pthread_mutex_lock(&cl->updateMutex);
-            BOOL pending = !sraRgnEmpty(cl->requestedRegion);
-            pthread_mutex_unlock(&cl->updateMutex);
-            if (pending) {
-                found = YES;
-                break;
-            }
+        if (st && st->wantsH264 && st->h264WantsFrame) {
+            found = YES;
+            break;
         }
     }
     rfbReleaseClientIterator(it);
@@ -3292,10 +3294,10 @@ static void tvH264MarkAllClientsNeedReset(void) {
 }
 
 // Consume each H.264 client's outstanding update request at ENCODE time, so one
-// FramebufferUpdateRequest produces exactly one encoded frame. Previously the
-// request was consumed at delivery (async), so the capture thread saw the same
-// request on several ticks and encoded 2 frames per request (inflight limit),
-// which desynchronised noVNC's one-request-one-update loop.
+// FramebufferUpdateRequest produces exactly one encoded frame. The request is
+// tracked via the private h264WantsFrame flag (set in the FBU request hook)
+// rather than cl->requestedRegion, which libvncserver clears for cursor and
+// one-time updates.
 static void tvConsumeH264ClientRequests(void) {
     if (!gScreen)
         return;
@@ -3304,6 +3306,7 @@ static void tvConsumeH264ClientRequests(void) {
     while ((cl = rfbClientIteratorNext(it))) {
         TVClientState *st = tvGetClientState(cl);
         if (st && st->wantsH264) {
+            st->h264WantsFrame = NO;
             pthread_mutex_lock(&cl->updateMutex);
             sraRgnMakeEmpty(cl->requestedRegion);
             pthread_mutex_unlock(&cl->updateMutex);
@@ -3490,23 +3493,24 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
         }
     }
 
-    // Diagnostic: write sent/dropped counters so we can tell whether frames
-    // actually reach the client or are dropped for lack of an update request.
+    // Diagnostic: write sent/dropped counters every frame (not every 10) so a
+    // stall after only a couple of frames still produces a readable file.
     {
         static int sStatsCount = 0;
-        if ((++sStatsCount % 10) == 0) {
-            char buf[160];
-            int n = snprintf(buf, sizeof(buf), "sent=%d dropped=%d noRequest=%d key=%d bytes=%lu\n",
-                             gH264SentCount.load(std::memory_order_relaxed),
-                             gH264DroppedCount.load(std::memory_order_relaxed),
-                             gH264NoRequestCount.load(std::memory_order_relaxed),
-                             isKeyframe, (unsigned long)data.length);
-            (void)n;
-            FILE *f = fopen("/tmp/trollvnc_h264_stats.txt", "w");
-            if (f) {
-                fwrite(buf, 1, strlen(buf), f);
-                fclose(f);
-            }
+        ++sStatsCount;
+        char buf[160];
+        int n = snprintf(buf, sizeof(buf), "frame=%d sent=%d dropped=%d noRequest=%d inflight=%d key=%d bytes=%lu\n",
+                         sStatsCount,
+                         gH264SentCount.load(std::memory_order_relaxed),
+                         gH264DroppedCount.load(std::memory_order_relaxed),
+                         gH264NoRequestCount.load(std::memory_order_relaxed),
+                         gH264Inflight.load(std::memory_order_relaxed),
+                         isKeyframe, (unsigned long)data.length);
+        (void)n;
+        FILE *f = fopen("/tmp/trollvnc_h264_stats.txt", "w");
+        if (f) {
+            fwrite(buf, 1, strlen(buf), f);
+            fclose(f);
         }
     }
 
