@@ -1599,6 +1599,7 @@ static FILE *gH264OutputFile = NULL;                   // diagnostic: open dump 
 static std::atomic<int> gH264SentCount(0);             // diagnostic: frames actually written
 static std::atomic<int> gH264DroppedCount(0);          // diagnostic: frames skipped (no request)
 static std::atomic<int> gH264NoRequestCount(0);        // diagnostic: encode skipped (no pending request)
+static std::atomic<int> gH264WriteFailCount(0);        // diagnostic: rfbWriteExact returned < 0
 
 // Hash algorithm selection (auto: prefer CRC32 on ARM with hardware support)
 #if DEBUG
@@ -3308,6 +3309,9 @@ static void tvH264SyncCursorForDisplay(rfbClientPtr cl) {
     cl->enableCursorShapeUpdates = FALSE;
     cl->enableCursorPosUpdates = FALSE;
     cl->enableKeyboardLedState = FALSE;
+    cl->enableSupportedMessages = FALSE;
+    cl->enableSupportedEncodings = FALSE;
+    cl->enableServerIdentity = FALSE;
     cl->cursorX = cl->screen->cursorX;
     cl->cursorY = cl->screen->cursorY;
 }
@@ -3483,8 +3487,10 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
     int rc2 = (rc1 >= 0) ? rfbWriteExact(cl, (const char *)data.bytes, (int)data.length) : -1;
     pthread_mutex_unlock(&cl->sendMutex);
 
-    if (rc1 < 0 || rc2 < 0)
-        TVLogVerbose(@"H264: send to client failed");
+    if (rc1 < 0 || rc2 < 0) {
+        gH264WriteFailCount.fetch_add(1, std::memory_order_relaxed);
+        TVLog(@"H264: send to client failed rc1=%d rc2=%d errno=%d", rc1, rc2, errno);
+    }
 
     gH264SentCount.fetch_add(1, std::memory_order_relaxed);
 }
@@ -3512,27 +3518,6 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
         }
     }
 
-    // Diagnostic: write sent/dropped counters every frame (not every 10) so a
-    // stall after only a couple of frames still produces a readable file.
-    {
-        static int sStatsCount = 0;
-        ++sStatsCount;
-        char buf[160];
-        int n = snprintf(buf, sizeof(buf), "frame=%d sent=%d dropped=%d noRequest=%d inflight=%d key=%d bytes=%lu\n",
-                         sStatsCount,
-                         gH264SentCount.load(std::memory_order_relaxed),
-                         gH264DroppedCount.load(std::memory_order_relaxed),
-                         gH264NoRequestCount.load(std::memory_order_relaxed),
-                         gH264Inflight.load(std::memory_order_relaxed),
-                         isKeyframe, (unsigned long)data.length);
-        (void)n;
-        FILE *f = fopen("/tmp/trollvnc_h264_stats.txt", "w");
-        if (f) {
-            fwrite(buf, 1, strlen(buf), f);
-            fclose(f);
-        }
-    }
-
     // Snapshot clients under the iterator, then release it before writing so we
     // never hold the client-list lock while blocking on a socket.
     rfbClientPtr clients[16];
@@ -3548,6 +3533,30 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
         }
     }
     rfbReleaseClientIterator(it);
+
+    // Diagnostic: write counters every frame (not every 10) so a stall after
+    // only a couple of frames still produces a readable file. Include the live
+    // H.264 client count and any write failure count.
+    {
+        static int sStatsCount = 0;
+        ++sStatsCount;
+        char buf[200];
+        int n = snprintf(buf, sizeof(buf), "frame=%d sent=%d dropped=%d noRequest=%d inflight=%d clients=%d writeFail=%d key=%d bytes=%lu\n",
+                         sStatsCount,
+                         gH264SentCount.load(std::memory_order_relaxed),
+                         gH264DroppedCount.load(std::memory_order_relaxed),
+                         gH264NoRequestCount.load(std::memory_order_relaxed),
+                         gH264Inflight.load(std::memory_order_relaxed),
+                         count,
+                         gH264WriteFailCount.load(std::memory_order_relaxed),
+                         isKeyframe, (unsigned long)data.length);
+        (void)n;
+        FILE *f = fopen("/tmp/trollvnc_h264_stats.txt", "w");
+        if (f) {
+            fwrite(buf, 1, strlen(buf), f);
+            fclose(f);
+        }
+    }
 
     TVLogVerbose(@"H264: deliver %lu bytes key=%d to %d client(s)", (unsigned long)data.length, isKeyframe, count);
 
@@ -4528,14 +4537,28 @@ static void clientGoneHook(rfbClientPtr cl) {
     // Free per-client state
     TVClientState *st = tvGetClientState(cl);
     BOOL isRepeaterClient = NO;
+    BOOL wasH264 = NO;
     NSString *removeKey = nil;
     if (st) {
         isRepeaterClient = st->isRepeaterClient;
+        wasH264 = st->wantsH264;
         if (st->clientId8[0] != '\0') {
             removeKey = [NSString stringWithUTF8String:st->clientId8];
         }
         free(st);
         cl->clientData = NULL;
+    }
+
+    // Diagnostic: record H.264 client disconnects to a file we can inspect.
+    {
+        char buf[96];
+        int n = snprintf(buf, sizeof(buf), "disconnect h264=%d active=%d\n", wasH264 ? 1 : 0, gClientCount);
+        (void)n;
+        FILE *f = fopen("/tmp/trollvnc_h264_events.txt", "a");
+        if (f) {
+            fwrite(buf, 1, strlen(buf), f);
+            fclose(f);
+        }
     }
 
     // Remove by cached id (fallback to fd-derived if unavailable)
