@@ -3314,6 +3314,11 @@ static void tvH264SyncCursorForDisplay(rfbClientPtr cl) {
     cl->enableServerIdentity = FALSE;
     cl->cursorX = cl->screen->cursorX;
     cl->cursorY = cl->screen->cursorY;
+    // Also clear any copy/modified region the event loop may have queued, so
+    // rfbSendFramebufferUpdate always early-returns for H.264 clients and the
+    // encoder is the sole writer.
+    sraRgnMakeEmpty(cl->modifiedRegion);
+    sraRgnMakeEmpty(cl->copyRegion);
 }
 
 // Consume each H.264 client's outstanding update request at ENCODE time, so one
