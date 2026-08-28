@@ -3575,15 +3575,15 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
 static void tvH264EncodeAndSendIfNeeded(void) {
     if (!gH264Enabled)
         return;
-    if (!tvHasH264ClientWithPendingRequest()) {
-        gH264NoRequestCount.fetch_add(1, std::memory_order_relaxed);
-        return; // no client is waiting for a frame; encode on demand
-    }
+    // Encode continuously while any H.264 client is connected, rather than
+    // gating on a pending FramebufferUpdateRequest. noVNC's request loop is
+    // coupled to its async render queue, so demand-gating stalled the pipeline
+    // (first frame renders, then no more frames are requested). Backpressure
+    // below (gMaxInflightUpdates) bounds the encoder against a slow client.
+    if (!tvHasH264Clients())
+        return;
     if (gMaxInflightUpdates > 0 && gH264Inflight.load(std::memory_order_relaxed) >= gMaxInflightUpdates)
         return; // backpressure
-    // Consume the request now (before the async encode completes) so the next
-    // capture tick doesn't see the same request and encode a second frame.
-    tvConsumeH264ClientRequests();
     if (!tvH264EnsureEncoder())
         return;
     if (!gBackBuffer || gWidth <= 0 || gHeight <= 0)
