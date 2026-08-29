@@ -3222,7 +3222,10 @@ static rfbBool tvH264EnablePseudoEncoding(rfbClientPtr cl, void **data, int enco
         // Force an IDR so a freshly joined client can decode right away.
         gH264ForceKeyframe.store(true, std::memory_order_relaxed);
         cl->clientFramebufferUpdateRequestHook = tvH264FramebufferUpdateRequestHook;
-        TVLog(@"Client enabled H.264 (Open H.264) encoding");
+        // Use rfbLog (not TVLog/NSLog) so this shows up in the same log view as
+        // libvncserver's "Defaulting to raw encoding" etc., making it easy to
+        // confirm the client actually negotiated H.264.
+        rfbLog("Client enabled H.264 (Open H.264) encoding\n");
     }
     if (data)
         *data = (void *)1; // non-NULL so libvncserver records the extension as enabled
