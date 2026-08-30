@@ -1588,7 +1588,8 @@ static void *gBackBuffer = NULL;  // We render into this and then swap
 // NOT the TurboVNC/QEMU "VA H.264" number (0x48323634) that rfbproto.h calls
 // rfbEncodingH264; that one uses a different framing and is not what noVNC parses.
 static const int kTvEncodingOpenH264 = 50;
-static const uint32_t kTvH264FlagResetContext = 1; // bit 0
+static const uint32_t kTvH264FlagResetContext = 1;    // bit 0
+static const uint32_t kTvH264FlagResetAllContexts = 2; // bit 1
 
 static TVH264Encoder *gH264Encoder = nil;
 static CVPixelBufferPoolRef gH264PixelBufferPool = NULL;
@@ -3476,10 +3477,13 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
     sraRgnMakeEmpty(cl->requestedRegion);
     pthread_mutex_unlock(&cl->updateMutex);
 
-    // Only the first frame (or a frame after a resize) needs ResetContext so
-    // noVNC rebuilds its decoder; steady-state frames reuse the context.
-    uint32_t flags = (st->h264NeedsReset && isKeyframe) ? kTvH264FlagResetContext : 0;
-    if (flags & kTvH264FlagResetContext)
+    // On the first frame / after a resize, tell noVNC to drop ALL its decoder
+    // contexts (ResetAllContexts) rather than just the one for this rect: the
+    // rect dimensions change on rotation, so the old context's id no longer
+    // matches and a plain ResetContext would leak the stale context (whose
+    // held-back frame then stalls noVNC's render queue -> black screen).
+    uint32_t flags = (st->h264NeedsReset && isKeyframe) ? kTvH264FlagResetAllContexts : 0;
+    if (flags & kTvH264FlagResetAllContexts)
         st->h264NeedsReset = NO;
 
     uint8_t header[24];
