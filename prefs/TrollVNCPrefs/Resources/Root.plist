@@ -14,15 +14,11 @@
 		</dict>
 		<dict>
 			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>Enabled</string>
+			<string>PSButtonCell</string>
 			<key>label</key>
 			<string>服务器重启</string>
-			<key>default</key>
-			<true/>
+			<key>action</key>
+			<string>applyChanges</string>
 		</dict>
 	</array>
 </dict>
