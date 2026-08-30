@@ -27,8 +27,10 @@
 
 #import "Logging.h"
 
-// GOP: emit an IDR every N frames so a client can (re)join the stream.
-static const int kH264GopSize = 30;
+// GOP: emit an IDR every N frames so a client can (re)join the stream. A
+// smaller value makes rejoin faster but sends a large IDR more often, which
+// causes a visible stutter every N frames; keep it large to stay smooth.
+static const int kH264GopSize = 120;
 
 // 4-byte Annex-B start code emitted before every NAL unit.
 static const uint8_t kAnnexBStartCode[4] = {0x00, 0x00, 0x00, 0x01};
@@ -56,6 +58,9 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     std::atomic<bool> _pendingKeyframeRequest;
     std::atomic<bool> _invalidated;
 }
+
+- (int)width { return _width; }
+- (int)height { return _height; }
 
 - (instancetype)initWithWidth:(int)width height:(int)height {
     self = [super init];
@@ -127,9 +132,9 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
     // across browsers; extra VUI fields were a suspected cause of the Windows
     // Chrome black-screen (decodes fine on macOS but not on Windows).
 
-    // Bitrate scaled to output size: ~2.5 Mbps at 720p-class, up to ~6 Mbps for large screens.
+    // Bitrate scaled to output size: ~4 Mbps for small screens, 6 Mbps for large.
     int pixels = _width * _height;
-    int bitRate = pixels >= 2'000'000 ? 6'000'000 : (pixels >= 1'000'000 ? 4'000'000 : 2'500'000);
+    int bitRate = pixels >= 2'000'000 ? 6'000'000 : 4'000'000;
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitRate));
 }
 

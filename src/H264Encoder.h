@@ -55,6 +55,10 @@ NS_ASSUME_NONNULL_BEGIN
 /** Stop the session and release hardware resources. Safe to call more than once. */
 - (void)invalidate;
 
+/** The coded dimensions this encoder was created with (read-only). */
+@property(nonatomic, readonly) int width;
+@property(nonatomic, readonly) int height;
+
 @end
 
 NS_ASSUME_NONNULL_END

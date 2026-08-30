@@ -1621,7 +1621,7 @@ static void tvMarkRectModifiedExcludingH264(int x1, int y1, int x2, int y2);
 static void tvMarkFullScreenModifiedExcludingH264(void);
 static void tvH264EncodeAndSendIfNeeded(void);
 static void tvH264InvalidateEncoder(void);
-static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe);
+static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe, int width, int height);
 static void tvH264MarkAllClientsNeedReset(void);
 static void tvConsumeH264ClientRequests(void);
 static void tvH264SyncCursorForDisplay(rfbClientPtr cl);
@@ -3434,8 +3434,12 @@ static BOOL tvH264EnsureEncoder(void) {
         return NO;
     }
 
+    // Capture the encoder's dimensions at creation so the FBU header uses the
+    // dimensions the frame was actually encoded at, not the live gWidth/gHeight
+    // (which may have changed on a resize while a frame was still in flight).
+    int encWidth = gWidth, encHeight = gHeight;
     gH264Encoder.outputHandler = ^(NSData *data, BOOL isKeyframe) {
-        tvH264DeliverFrame(data, isKeyframe);
+        tvH264DeliverFrame(data, isKeyframe, encWidth, encHeight);
     };
 
     gH264ForceKeyframe.store(true, std::memory_order_relaxed);
@@ -3458,7 +3462,7 @@ NS_INLINE void tvPutU32BE(uint8_t *p, uint32_t v) {
 // Send one Open H.264 framebuffer update rect to a client. The wire format is:
 //   FramebufferUpdate header + rect header(x,y,w,h,encoding=50)
 //   + U32 length + U32 flags + Annex-B NAL data.
-static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyframe) {
+static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyframe, int width, int height) {
     if (!cl || !data || data.length == 0)
         return;
     TVClientState *st = tvGetClientState(cl);
@@ -3484,8 +3488,8 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
     tvPutU16BE(header + 2, 1);                  // nRects
     tvPutU16BE(header + 4, 0);                  // x
     tvPutU16BE(header + 6, 0);                  // y
-    tvPutU16BE(header + 8, (uint16_t)gWidth);   // w
-    tvPutU16BE(header + 10, (uint16_t)gHeight); // h
+    tvPutU16BE(header + 8, (uint16_t)width);    // w (frame's actual coded width)
+    tvPutU16BE(header + 10, (uint16_t)height);  // h (frame's actual coded height)
     tvPutU32BE(header + 12, (uint32_t)kTvEncodingOpenH264);
     tvPutU32BE(header + 16, (uint32_t)data.length);
     tvPutU32BE(header + 20, flags);
@@ -3504,7 +3508,7 @@ static void tvH264SendFrameToClient(rfbClientPtr cl, NSData *data, BOOL isKeyfra
 }
 
 // Encoder output handler: fan the encoded access unit out to every H.264 client.
-static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
+static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe, int width, int height) {
     gH264Inflight.fetch_sub(1, std::memory_order_acq_rel);
     if (!gScreen || !data || data.length == 0)
         return;
@@ -3569,7 +3573,7 @@ static void tvH264DeliverFrame(NSData *data, BOOL isKeyframe) {
     TVLogVerbose(@"H264: deliver %lu bytes key=%d to %d client(s)", (unsigned long)data.length, isKeyframe, count);
 
     for (int i = 0; i < count; ++i) {
-        tvH264SendFrameToClient(clients[i], data, isKeyframe);
+        tvH264SendFrameToClient(clients[i], data, isKeyframe, width, height);
         rfbDecrClientRef(clients[i]);
     }
 }
