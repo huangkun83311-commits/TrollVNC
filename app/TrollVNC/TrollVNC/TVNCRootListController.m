@@ -286,36 +286,39 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         return;
     }
 
-    UIBarButtonItem *applyItem = [[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedStringFromTableInBundle(@"Apply", @"Localizable", self.bundle, nil)
-                style:UIBarButtonItemStyleDone
-               target:self
-               action:@selector(applyChanges)];
-    applyItem.tintColor = _primaryColor;
+    // 注释掉"应用"按钮
+    // UIBarButtonItem *applyItem = [[UIBarButtonItem alloc]
+    //     initWithTitle:NSLocalizedStringFromTableInBundle(@"Apply", @"Localizable", self.bundle, nil)
+    //             style:UIBarButtonItemStyleDone
+    //            target:self
+    //            action:@selector(applyChanges)];
+    // applyItem.tintColor = _primaryColor;
 
-    UIBarButtonItem *clientsItem = [[UIBarButtonItem alloc]
-        initWithTitle:NSLocalizedStringFromTableInBundle(@"Clients", @"Localizable", self.bundle, nil)
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(showClients)];
-    clientsItem.tintColor = _primaryColor;
+    // 注释掉"客户端"按钮
+    // UIBarButtonItem *clientsItem = [[UIBarButtonItem alloc]
+    //     initWithTitle:NSLocalizedStringFromTableInBundle(@"Clients", @"Localizable", self.bundle, nil)
+    //             style:UIBarButtonItemStylePlain
+    //            target:self
+    //            action:@selector(showClients)];
+    // clientsItem.tintColor = _primaryColor;
 
-#ifdef THEBOOTSTRAP
-    BOOL isApp = YES;
-#else
-    BOOL isApp = NO;
-#endif
-
-    BOOL isPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
-    if (isApp || isPad) {
-        self.navigationItem.leftBarButtonItem = clientsItem;
-        self.navigationItem.rightBarButtonItem = applyItem;
-    } else {
-        self.navigationItem.rightBarButtonItems = @[
-            applyItem,
-            clientsItem,
-        ];
-    }
+    // 注释掉设置按钮位置的代码
+    // #ifdef THEBOOTSTRAP
+    //     BOOL isApp = YES;
+    // #else
+    //     BOOL isApp = NO;
+    // #endif
+    // 
+    // BOOL isPad = ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad);
+    // if (isApp || isPad) {
+    //     self.navigationItem.leftBarButtonItem = clientsItem;
+    //     self.navigationItem.rightBarButtonItem = applyItem;
+    // } else {
+    //     self.navigationItem.rightBarButtonItems = @[
+    //         applyItem,
+    //         clientsItem,
+    //     ];
+    // }
 
     self.monitor = nw_path_monitor_create();
     nw_path_monitor_set_queue(self.monitor, dispatch_get_main_queue());
