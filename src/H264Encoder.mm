@@ -134,7 +134,7 @@ static void tv_h264_output_callback(void *outputCallbackRefCon, void *sourceFram
 
     // Bitrate scaled to output size: ~4 Mbps for small screens, 6 Mbps for large.
     int pixels = _width * _height;
-    int bitRate = pixels >= 2'000'000 ? 6'000'000 : 4'000'000;
+    int bitRate = pixels >= 2'000'000 ? 3'000'000 : 2'000'000;
     VTSessionSetProperty(_session, kVTCompressionPropertyKey_AverageBitRate, (__bridge CFTypeRef)@(bitRate));
 }
 
