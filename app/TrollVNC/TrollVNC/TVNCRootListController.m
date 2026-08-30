@@ -276,7 +276,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
     ]] setMinimumTrackTintColor:_primaryColor];
     [self.view setTintColor:_primaryColor];
 
-    self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"TrollVNC"
+    self.navigationItem.backBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"AKUN"
                                                                              style:UIBarButtonItemStylePlain
                                                                             target:nil
                                                                             action:nil];
@@ -361,7 +361,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
 #endif
 
         NSString *footerText = [NSString
-            stringWithFormat:NSLocalizedStringFromTableInBundle(@"TrollVNC (%@) v%@", @"Localizable", self.bundle, nil),
+            stringWithFormat:NSLocalizedStringFromTableInBundle(@"AKUN (%@) v%@", @"Localizable", self.bundle, nil),
                              packageScheme, versionString];
         _defaultFooterText = footerText;
     }
@@ -414,7 +414,7 @@ NS_INLINE BOOL TVNCIsValidBindHostLiteral(NSString *host) {
         return;
     }
 
-    NSString *footerText = [NSString stringWithFormat:@"%@\n%@", [self defaultFooterText], [self currentStatusText]];
+    NSString *footerText = [self currentStatusText];
     [_firstGroupSpecifier setProperty:footerText forKey:@"footerText"];
 
     if (reload) {
