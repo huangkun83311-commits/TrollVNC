@@ -161,6 +161,11 @@ export class H264Context {
             codedWidth: this._width,
             codedHeight: this._height,
             optimizeForLatency: true,
+            // Prefer the software decoder: the hardware H.264 decoder on
+            // Windows buffers several frames internally (a 6-frame delay),
+            // which shows up as laggy, "half a beat behind" output. Software
+            // decode keeps the pending queue to ~1 frame.
+            hardwareAcceleration: 'prefer-software',
         });
     }
 
