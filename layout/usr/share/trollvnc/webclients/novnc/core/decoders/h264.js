@@ -229,17 +229,11 @@ export class H264Context {
             }
         }
 
-        // Flush so Chromium's decoder emits this access unit immediately instead
-        // of holding it until the next one arrives. Without this, a decoder with
-        // frame delay deadlocks against noVNC's render-queue defer (the first
-        // frame never renders, so noVNC never feeds the next frame). Requires the
-        // server to send a keyframe per update, since flush() resets the decoder's
-        // reference buffer (a following P-frame would otherwise need a new keyframe).
-        try {
-            this._decoder.flush().catch(() => {});
-        } catch (e) {
-            Log.Warn("Failed to flush decoder:", e);
-        }
+        // NOTE: do NOT flush() here. flush() resets the decoder's reference
+        // buffer (the next chunk would have to be a keyframe), which would break
+        // GOP P-frames. Instead the render-defer in rfb.js is disabled so the
+        // next frame is always fed, which makes Chromium emit the previous frame
+        // (its frame delay) without a flush.
 
         // We only keep last frame of each payload
         if (result !== null) {

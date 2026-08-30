@@ -2503,9 +2503,15 @@ export default class RFB extends EventTargetMixin {
             this._sock.rQskipBytes(1);  // Padding
             this._FBU.rects = this._sock.rQshift16();
 
-            // Make sure the previous frame is fully rendered first
-            // to avoid building up an excessive queue
-            if (this._display.pending()) {
+            // NB: the render-queue defer is intentionally disabled for the
+            // H.264 path. Chromium's WebCodecs H.264 decoder has a one-frame
+            // delay (it emits frame N only when frame N+1 arrives or on flush),
+            // so waiting for the previous frame to render before reading the
+            // next FBU deadlocks: the first frame never renders because no
+            // next frame is ever fed. Feeding every frame (no defer) lets the
+            // decoder emit each frame one step later and keeps the queue
+            // bounded to ~1 frame.
+            if (this._display.pending() && false) {
                 this._flushing = true;
                 this._display.flush()
                     .then(() => {
