@@ -1,9 +1,9 @@
-Package: com.82flex.trollvnc
-Name: TrollVNC
-Version: 1.0
+Package: AKUN
+Name: AKUN
+Version: 3.2-272
 Section: Tweaks
 Depends: firmware (>= 14.0), preferenceloader
 Architecture: iphoneos-arm
-Author: 82Flex <82flex@gmail.com>
-Maintainer: 82Flex <82flex@gmail.com>
-Description: TrollVNC is a VNC server for iOS devices, allowing remote access and control of the device’s screen.
+Author: AKUN <your@email.com>
+Maintainer: AKUN <your@email.com>
+Description: AKUN VNC server for iOS devices, allowing remote access and control of the device's screen.
