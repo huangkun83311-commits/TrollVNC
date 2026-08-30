@@ -73,19 +73,19 @@ static BOOL gEnabled = YES;
 static int gPort = 5901;
 static int gTvCtlPort = 0;        // port for control connections (0 = disabled)
 static NSString *gBindHost = nil; // optional bind address from CLI/config
-static NSString *gDesktopName = @"TrollVNC";
+static NSString *gDesktopName = @"AKUN";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
 static BOOL gClipboardEnabled = YES;
 static BOOL gIsDaemonMode = NO; // set when launched with -daemon
 
-static double gScale = 1.0; // 0 < scale <= 1.0, 1.0 = no scaling
+static double gScale = 0.35; // 0 < scale <= 1.0, 1.0 = no scaling
 // Preferred frame rate range (0 = unspecified)
-static int gFpsMin = 0;
-static int gFpsPref = 0;
-static int gFpsMax = 0;
+static int gFpsMin = 12;
+static int gFpsPref = 12;
+static int gFpsMax = 12;
 static double gDeferWindowSec = 0.015;      // Coalescing window; 0 disables deferral
-static int gMaxInflightUpdates = 2;         // Max concurrent client encodes; drop frames if >= this
+static int gMaxInflightUpdates = 1;         // Max concurrent client encodes; drop frames if >= this
 static int gTileSize = 32;                  // Tile size for dirty detection (pixels)
 static int gFullscreenThresholdPercent = 0; // If changed tiles exceed this %, update full screen
 static int gMaxRectsLimit = 256;            // Max rects before falling back to bbox/fullscreen
@@ -137,8 +137,8 @@ static int gRepeaterPort = 5500;
 static int gRepeaterId = 12345679;
 
 // User notifications
-static BOOL gUserClientNotifsEnabled = YES;
-static BOOL gUserSingleNotifsEnabled = YES;
+static BOOL gUserClientNotifsEnabled = NO;
+static BOOL gUserSingleNotifsEnabled = NO;
 
 // Blocked hosts (temporary blacklist)
 static NSMutableSet<NSString *> *gBlockedHosts = nil;
