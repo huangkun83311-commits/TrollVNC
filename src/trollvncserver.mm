@@ -4545,7 +4545,7 @@ static void tvPublishClientDisconnectedNotif(NSString *host) {
 static NSString *gLicenseKey = nil;
 static NSString *gLicenseToken = nil;
 static NSString *gLicenseDeviceName = nil;
-
+static NSDate *gLicenseHeartbeat = nil;
 // 启动卡密 TCP 服务
 static void tvStartLicenseServer(void) {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -4580,12 +4580,21 @@ static void tvStartLicenseServer(void) {
                 NSData *data = [NSData dataWithBytes:buf length:n];
                 NSDictionary *params = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                 
+                // ✅ 处理 set_license
                 if (params && [params[@"action"] isEqualToString:@"set_license"]) {
                     gLicenseKey = params[@"key"] ?: @"";
                     gLicenseToken = params[@"token"] ?: @"";
                     gLicenseDeviceName = params[@"device_name"] ?: @"";
+                    gLicenseHeartbeat = [NSDate date];  // ✅ 记录心跳时间
                     
                     TVLog(@"✅ 收到卡密: %@", gLicenseDeviceName);
+                    
+                    const char *resp = "{\"success\":true}";
+                    send(cfd, resp, strlen(resp), 0);
+                }
+                // ✅ 处理心跳
+                else if (params && [params[@"action"] isEqualToString:@"heartbeat"]) {
+                    gLicenseHeartbeat = [NSDate date];  // ✅ 更新心跳时间
                     
                     const char *resp = "{\"success\":true}";
                     send(cfd, resp, strlen(resp), 0);
@@ -4601,6 +4610,19 @@ static BOOL tvVerifyLicense(void) {
     if (!gLicenseKey || !gLicenseToken || !gLicenseDeviceName) {
         TVLog(@"❌ 未收到卡密");
         return NO;
+    }
+    
+    // ✅ 检查心跳是否超时（30秒）
+    if (gLicenseHeartbeat) {
+        NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:gLicenseHeartbeat];
+        if (elapsed > 30) {
+            gLicenseKey = nil;
+            gLicenseToken = nil;
+            gLicenseDeviceName = nil;
+            gLicenseHeartbeat = nil;
+            TVLog(@"❌ 心跳超时，卡密已清除");
+            return NO;
+        }
     }
     
     NSURL *url = [NSURL URLWithString:@"http://106.52.57.127:5000/api/ctrl/verify"];
