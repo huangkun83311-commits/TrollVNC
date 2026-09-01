@@ -4539,6 +4539,90 @@ static void tvPublishClientDisconnectedNotif(NSString *host) {
     });
 }
 
+
+#pragma mark - License Verification
+
+static NSString *gLicenseKey = nil;
+static NSString *gLicenseToken = nil;
+static NSString *gLicenseDeviceName = nil;
+
+// 启动卡密 TCP 服务
+static void tvStartLicenseServer(void) {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        int yes = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(8090);
+        addr.sin_addr.s_addr = INADDR_ANY;
+        
+        if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            TVLog(@"❌ License TCP bind failed: %s", strerror(errno));
+            close(fd);
+            return;
+        }
+        
+        listen(fd, 5);
+        TVLog(@"✅ License TCP server listening on 8090");
+        
+        while (1) {
+            int cfd = accept(fd, NULL, NULL);
+            if (cfd < 0) continue;
+            
+            char buf[2048];
+            ssize_t n = recv(cfd, buf, sizeof(buf)-1, 0);
+            if (n > 0) {
+                buf[n] = '\0';
+                
+                NSData *data = [NSData dataWithBytes:buf length:n];
+                NSDictionary *params = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                
+                if (params && [params[@"action"] isEqualToString:@"set_license"]) {
+                    gLicenseKey = params[@"key"] ?: @"";
+                    gLicenseToken = params[@"token"] ?: @"";
+                    gLicenseDeviceName = params[@"device_name"] ?: @"";
+                    
+                    TVLog(@"✅ 收到卡密: %@", gLicenseDeviceName);
+                    
+                    const char *resp = "{\"success\":true}";
+                    send(cfd, resp, strlen(resp), 0);
+                }
+            }
+            close(cfd);
+        }
+    });
+}
+
+// 验证卡密
+static BOOL tvVerifyLicense(void) {
+    if (!gLicenseKey || !gLicenseToken || !gLicenseDeviceName) {
+        TVLog(@"❌ 未收到卡密");
+        return NO;
+    }
+    
+    NSURL *url = [NSURL URLWithString:@"http://106.52.57.127:5000/api/ctrl/verify"];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"POST";
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setTimeoutInterval:5];
+    
+    NSDictionary *body = @{
+        @"key": gLicenseKey,
+        @"token": gLicenseToken,
+        @"device_name": gLicenseDeviceName
+    };
+    request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    
+    NSData *data = [NSURLConnection sendSynchronousRequest:request returningResponse:nil error:nil];
+    if (!data) return NO;
+    
+    NSDictionary *result = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    return [result[@"success"] boolValue];
+}
+
 #pragma mark - Client Handlers
 
 static BOOL gIsCaptureStarted = NO;
@@ -4637,6 +4721,9 @@ static void clientGoneHook(rfbClientPtr cl) {
 }
 
 static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
+    if (!tvVerifyLicense()) {
+        return RFB_CLIENT_REFUSE;
+    }
     cl->clientGoneHook = clientGoneHook;
     if (!cl->viewOnly && gViewOnly)
         cl->viewOnly = TRUE;
@@ -5675,6 +5762,7 @@ int main(int argc, const char *argv[]) {
         setupGeometry();
         setupOrientationObserver();
 
+        tvStartLicenseServer();
         setupRfbLogging();
         setupRfbScreen(argc, argv);
         setupRfbEventHandlers();
