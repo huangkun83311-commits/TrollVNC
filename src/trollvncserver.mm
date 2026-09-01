@@ -4542,10 +4542,18 @@ static void tvPublishClientDisconnectedNotif(NSString *host) {
 
 #pragma mark - License Verification
 
-static NSString *gLicenseKey = nil;
-static NSString *gLicenseToken = nil;
-static NSString *gLicenseDeviceName = nil;
-static NSDate *gLicenseHeartbeat = nil;
+// 中控卡密
+static NSString *gCtlKey = nil;
+static NSString *gCtlToken = nil;
+static NSString *gCtlDeviceName = nil;
+static NSDate *gCtlHeartbeat = nil;
+
+// 云控卡密
+static NSString *gCloudKey = nil;
+static NSString *gCloudToken = nil;
+static NSString *gCloudDeviceName = nil;
+static NSDate *gCloudHeartbeat = nil;
+
 // 启动卡密 TCP 服务
 static void tvStartLicenseServer(void) {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -4580,21 +4588,37 @@ static void tvStartLicenseServer(void) {
                 NSData *data = [NSData dataWithBytes:buf length:n];
                 NSDictionary *params = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                 
-                // ✅ 处理 set_license
-                if (params && [params[@"action"] isEqualToString:@"set_license"]) {
-                    gLicenseKey = params[@"key"] ?: @"";
-                    gLicenseToken = params[@"token"] ?: @"";
-                    gLicenseDeviceName = params[@"device_name"] ?: @"";
-                    gLicenseHeartbeat = [NSDate date];  // ✅ 记录心跳时间
-                    
-                    TVLog(@"✅ 收到卡密: %@", gLicenseDeviceName);
+                NSString *action = params[@"action"];
+                NSString *type = params[@"type"] ?: @"2";  // 默认云控
+                
+                // 处理 set_license
+                if ([action isEqualToString:@"set_license"]) {
+                    if ([type isEqualToString:@"1"]) {
+                        // 中控卡密
+                        gCtlKey = params[@"key"] ?: @"";
+                        gCtlToken = params[@"token"] ?: @"";
+                        gCtlDeviceName = params[@"device_name"] ?: @"";
+                        gCtlHeartbeat = [NSDate date];
+                        TVLog(@"✅ 收到中控卡密: %@", gCtlDeviceName);
+                    } else {
+                        // 云控卡密
+                        gCloudKey = params[@"key"] ?: @"";
+                        gCloudToken = params[@"token"] ?: @"";
+                        gCloudDeviceName = params[@"device_name"] ?: @"";
+                        gCloudHeartbeat = [NSDate date];
+                        TVLog(@"✅ 收到云控卡密: %@", gCloudDeviceName);
+                    }
                     
                     const char *resp = "{\"success\":true}";
                     send(cfd, resp, strlen(resp), 0);
                 }
-                // ✅ 处理心跳
-                else if (params && [params[@"action"] isEqualToString:@"heartbeat"]) {
-                    gLicenseHeartbeat = [NSDate date];  // ✅ 更新心跳时间
+                // 处理心跳
+                else if ([action isEqualToString:@"heartbeat"]) {
+                    if ([type isEqualToString:@"1"]) {
+                        gCtlHeartbeat = [NSDate date];  // 更新中控心跳
+                    } else {
+                        gCloudHeartbeat = [NSDate date];  // 更新云控心跳
+                    }
                     
                     const char *resp = "{\"success\":true}";
                     send(cfd, resp, strlen(resp), 0);
@@ -4605,26 +4629,8 @@ static void tvStartLicenseServer(void) {
     });
 }
 
-// 验证卡密
-static BOOL tvVerifyLicense(void) {
-    if (!gLicenseKey || !gLicenseToken || !gLicenseDeviceName) {
-        TVLog(@"❌ 未收到卡密");
-        return NO;
-    }
-    
-    // ✅ 检查心跳是否超时（30秒）
-    if (gLicenseHeartbeat) {
-        NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:gLicenseHeartbeat];
-        if (elapsed > 30) {
-            gLicenseKey = nil;
-            gLicenseToken = nil;
-            gLicenseDeviceName = nil;
-            gLicenseHeartbeat = nil;
-            TVLog(@"❌ 心跳超时，卡密已清除");
-            return NO;
-        }
-    }
-    
+// 服务器验证
+static BOOL tvVerifyWithServer(NSString *key, NSString *token, NSString *deviceName, int type) {
     NSURL *url = [NSURL URLWithString:@"http://106.52.57.127:5000/api/ctrl/verify"];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"POST";
@@ -4632,9 +4638,10 @@ static BOOL tvVerifyLicense(void) {
     [request setTimeoutInterval:5];
     
     NSDictionary *body = @{
-        @"key": gLicenseKey,
-        @"token": gLicenseToken,
-        @"device_name": gLicenseDeviceName
+        @"key": key,
+        @"token": token,
+        @"device_name": deviceName,
+        @"type": @(type)
     };
     request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
     
@@ -4643,6 +4650,47 @@ static BOOL tvVerifyLicense(void) {
     
     NSDictionary *result = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     return [result[@"success"] boolValue];
+}
+
+// 验证卡密
+static BOOL tvVerifyLicense(void) {
+    NSDate *now = [NSDate date];
+    
+    // 检查中控卡密
+    if (gCtlKey && gCtlToken && gCtlDeviceName && gCtlHeartbeat) {
+        NSTimeInterval elapsed = [now timeIntervalSinceDate:gCtlHeartbeat];
+        if (elapsed <= 30) {
+            if (tvVerifyWithServer(gCtlKey, gCtlToken, gCtlDeviceName, 1)) {
+                return YES;
+            }
+        } else {
+            // 中控心跳超时，清除
+            gCtlKey = nil;
+            gCtlToken = nil;
+            gCtlDeviceName = nil;
+            gCtlHeartbeat = nil;
+            TVLog(@"❌ 中控心跳超时，卡密已清除");
+        }
+    }
+    
+    // 检查云控卡密
+    if (gCloudKey && gCloudToken && gCloudDeviceName && gCloudHeartbeat) {
+        NSTimeInterval elapsed = [now timeIntervalSinceDate:gCloudHeartbeat];
+        if (elapsed <= 30) {
+            if (tvVerifyWithServer(gCloudKey, gCloudToken, gCloudDeviceName, 2)) {
+                return YES;
+            }
+        } else {
+            // 云控心跳超时，清除
+            gCloudKey = nil;
+            gCloudToken = nil;
+            gCloudDeviceName = nil;
+            gCloudHeartbeat = nil;
+            TVLog(@"❌ 云控心跳超时，卡密已清除");
+        }
+    }
+    
+    return NO;
 }
 
 #pragma mark - Client Handlers
