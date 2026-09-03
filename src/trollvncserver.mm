@@ -4564,7 +4564,7 @@ static void tvStartLicenseServer(void) {
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
-        addr.sin_port = htons(8090);
+        addr.sin_port = htons(83384);
         addr.sin_addr.s_addr = INADDR_ANY;
         
         if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
@@ -4574,7 +4574,7 @@ static void tvStartLicenseServer(void) {
         }
         
         listen(fd, 5);
-        TVLog(@"✅ License TCP server listening on 8090");
+        TVLog(@"✅ License TCP server listening on 83384");
         
         while (1) {
             int cfd = accept(fd, NULL, NULL);
