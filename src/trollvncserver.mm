@@ -4615,14 +4615,40 @@ static void tvStartLicenseServer(void) {
                 // 处理心跳
                 else if ([action isEqualToString:@"heartbeat"]) {
                     if ([type isEqualToString:@"1"]) {
+                        // 中控心跳：带 key/token 则补卡密（设备重启后中控心跳自动补推）
+                        if (params[@"key"] && params[@"token"]) {
+                            gCtlKey = params[@"key"] ?: @"";
+                            gCtlToken = params[@"token"] ?: @"";
+                            // 中控心跳带了 device_name 就更新，没带保留旧值
+                            if (params[@"device_name"] && [params[@"device_name"] length] > 0) {
+                                gCtlDeviceName = params[@"device_name"];
+                            }
+                        }
                         gCtlHeartbeat = [NSDate date];  // 更新中控心跳
                     } else {
+                        // 云控心跳
+                        if (params[@"key"] && params[@"token"]) {
+                            gCloudKey = params[@"key"] ?: @"";
+                            gCloudToken = params[@"token"] ?: @"";
+                            if (params[@"device_name"] && [params[@"device_name"] length] > 0) {
+                                gCloudDeviceName = params[@"device_name"];
+                            }
+                        }
                         gCloudHeartbeat = [NSDate date];  // 更新云控心跳
                     }
-                    
-                    const char *resp = "{\"success\":true}";
+                
+                    // 响应带 has_license：中控据此判断是否要精准补推
+                    BOOL hasLicense = NO;
+                    if ([type isEqualToString:@"1"]) {
+                        hasLicense = (gCtlKey.length > 0 && gCtlToken.length > 0 && gCtlDeviceName.length > 0);
+                    } else {
+                        hasLicense = (gCloudKey.length > 0 && gCloudToken.length > 0 && gCloudDeviceName.length > 0);
+                    }
+                    NSString *respStr = [NSString stringWithFormat:@"{\"success\":true,\"has_license\":%@}", hasLicense ? @"true" : @"false"];
+                    const char *resp = [respStr UTF8String];
                     send(cfd, resp, strlen(resp), 0);
                 }
+
             }
             close(cfd);
         }
@@ -4659,7 +4685,7 @@ static BOOL tvVerifyLicense(void) {
     // 检查中控卡密
     if (gCtlKey && gCtlToken && gCtlDeviceName && gCtlHeartbeat) {
         NSTimeInterval elapsed = [now timeIntervalSinceDate:gCtlHeartbeat];
-        if (elapsed <= 30) {
+        if (elapsed <= 180) {
             if (tvVerifyWithServer(gCtlKey, gCtlToken, gCtlDeviceName, 1)) {
                 return YES;
             }
@@ -4676,7 +4702,7 @@ static BOOL tvVerifyLicense(void) {
     // 检查云控卡密
     if (gCloudKey && gCloudToken && gCloudDeviceName && gCloudHeartbeat) {
         NSTimeInterval elapsed = [now timeIntervalSinceDate:gCloudHeartbeat];
-        if (elapsed <= 30) {
+        if (elapsed <= 180) {
             if (tvVerifyWithServer(gCloudKey, gCloudToken, gCloudDeviceName, 2)) {
                 return YES;
             }
